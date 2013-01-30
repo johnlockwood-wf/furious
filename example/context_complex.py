@@ -112,6 +112,3 @@ def make_a_new_context_example(*args, **kwargs):
         logging.info('Added job %d to context.', i)
 
     return ctx
-
-
-

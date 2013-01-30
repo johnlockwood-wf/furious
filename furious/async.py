@@ -321,4 +321,3 @@ def _check_options(options):
 
     assert 'job' not in options
     #assert 'callbacks' not in options
-

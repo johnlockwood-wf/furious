@@ -152,6 +152,3 @@ class TestBuiltTree(unittest.TestCase):
         group_marker = self.marker.children[0]
         leaf_marker = group_marker.children[3]
         self.assertEqual(group_marker.key,leaf_marker.group_id)
-
-
-
