@@ -32,7 +32,6 @@ from .context_complex import ContextComplexHandler
 from .context_grep import ContextGrepHandler
 from .context_grep import GrepViewHandler
 from .context_intro import ContextIntroHandler
-from .grep import GrepHandler
 from .simple_workflow import SimpleWorkflowHandler
 from .complex_workflow import ComplexWorkflowHandler
 from .batcher import BatcherHandler
@@ -54,7 +53,6 @@ app = webapp2.WSGIApplication([
     ('/context/complex', ContextComplexHandler),
     ('/context/grep', GrepViewHandler),
     ('/context/grep/run', ContextGrepHandler),
-    ('/grep', GrepHandler),
     ('/workflow', SimpleWorkflowHandler),
     ('/workflow/complex', ComplexWorkflowHandler),
     ('/batcher', BatcherViewHandler),
