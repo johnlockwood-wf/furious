@@ -33,10 +33,6 @@ from .context_grep import ContextGrepHandler
 from .context_grep import GrepViewHandler
 from .context_intro import ContextIntroHandler
 from .simple_workflow import SimpleWorkflowHandler
-from .complex_workflow import ComplexWorkflowHandler
-from .batcher import BatcherHandler
-from .batcher import BatcherStatsHandler
-from .batcher import BatcherViewHandler
 
 config = {
     'webapp2_extras.jinja2': {
@@ -59,3 +55,4 @@ app = webapp2.WSGIApplication([
     ('/batcher/run', BatcherHandler),
     ('/batcher/stats', BatcherStatsHandler),
 ], config=config)
+
