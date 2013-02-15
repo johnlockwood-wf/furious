@@ -32,6 +32,9 @@ from .context_complex import ContextComplexHandler
 from .context_grep import ContextGrepHandler
 from .context_grep import GrepViewHandler
 from .context_intro import ContextIntroHandler
+from example.batcher import BatcherViewHandler
+from example.batcher import BatcherHandler
+from example.batcher import BatcherStatsHandler
 from .simple_workflow import SimpleWorkflowHandler
 
 config = {

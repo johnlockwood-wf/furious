@@ -29,6 +29,7 @@ from .job_utils import function_path_to_reference
 
 AsyncException = namedtuple('AsyncException', 'error args traceback exception')
 
+
 class AsyncError(Exception):
     """The base class other Async errors can subclass."""
 
@@ -36,7 +37,6 @@ class AsyncError(Exception):
 def run_job():
     """Takes an async object and executes its job."""
     from .context.marker import handle_done
-    logging.info('run_job')
     async = get_current_async()
     async_options = async.get_options()
 
@@ -87,8 +87,7 @@ def run_job():
             #Should we provide it automatically when any Context
             #completes by starting
             #an async with the batch id as it's _persistence_id?
-            if hasattr(processor_result,'_id'):
-                logging.info("set sub context's id")
+            if hasattr(processor_result, '_id'):
                 processor_result._id = async._persistence_id
         processor_result.start()
     else:
@@ -115,7 +114,6 @@ def encode_exception(exception):
 
 def _process_results():
     """Process the results from an Async job."""
-    logging.info("_process_results")
     async = get_current_async()
     callbacks = async.get_callbacks()
 
