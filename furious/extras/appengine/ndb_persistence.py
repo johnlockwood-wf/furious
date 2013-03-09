@@ -17,7 +17,11 @@
 import logging
 from google.appengine.ext.ndb import Future
 from google.appengine.ext import ndb
+
+from furious.extras.appengine.ndb_optimized import all_done
 logger = logging.getLogger('marker_tree')
+
+all_done = all_done
 
 
 class ContextPersist(ndb.Model):

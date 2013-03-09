@@ -13,40 +13,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-import logging
 
-from google.appengine.ext import testbed
-from mock import patch
 import unittest
+from google.appengine.ext import testbed
 
 
-class TestPersistMarker(unittest.TestCase):
+class TestNDBOptimizedDone(unittest.TestCase):
     def setUp(self):
         import os
         import uuid
 
         self.testbed = testbed.Testbed()
         self.testbed.activate()
-        self.testbed.init_taskqueue_stub()
         self.testbed.init_memcache_stub()
         self.testbed.init_datastore_v3_stub()
 
         # Ensure each test looks like it is in a new request.
         os.environ['REQUEST_ID_HASH'] = uuid.uuid4().hex
 
-    def test_store_context(self):
-        from furious.extras.appengine.ndb_persistence import store_context
-        from furious.extras.appengine.ndb_persistence import load_context
-        from furious.extras.appengine.ndb_persistence import ContextPersist
-        from furious.context import Context
-        ctx = Context()
-        ctx.add('test', args=[1, 2])
-        ctx_dict = ctx.to_dict()
-        store_context(ctx.id, ctx_dict)
-        ctx_persisted = ContextPersist.get_by_id(ctx.id)
-        self.assertIsNotNone(ctx_persisted)
-        reloaded_ctx = load_context(ctx.id)
-        self.assertEqual(reloaded_ctx, ctx_dict)
+    def test_none_done(self):
+        from furious.extras.appengine.ndb_persistence import MarkerPersist
+        from furious.extras.appengine.ndb_optimized import all_done
+        for x in xrange(3):
+            marker_persisted = MarkerPersist(id=str(x))
+            marker_persisted.put()
+
+        self.assertFalse(all_done(['0', '1', '2']))
+
+    def test_all_done(self):
+        from furious.extras.appengine.ndb_persistence import MarkerPersist
+        from furious.extras.appengine.ndb_optimized import all_done
+        for x in xrange(3):
+            marker_persisted = MarkerPersist(id=str(x), done=True)
+            marker_persisted.put()
+
+        self.assertTrue(all_done(['0', '1', '2']))
 
     def tearDown(self):
         self.testbed.deactivate()
