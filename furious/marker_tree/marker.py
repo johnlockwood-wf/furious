@@ -489,6 +489,28 @@ class Marker(object):
             return persistence_module.marker_get_children(
                 self, load_results=load_results)
 
+    def are_all_children_done(self):
+        """Checks to see if all the children markers done,
+        doing so by checking if at least one is not done.
+        Check for and use a more optimized way to achieve
+        this by a persistence module, to allow for better
+        than the lowest common denominator.
+        """
+        if hasattr(persistence_module, 'all_done') and \
+                callable(persistence_module.all_done):
+            logger.debug("faster async done test.")
+            return persistence_module.all_done(self.children_as_ids())
+        else:
+            children_markers = self.get_persisted_children()
+
+            for marker in children_markers:
+                if not marker:
+                    return False
+                if marker and not marker.done:
+                    return False
+
+            return True
+
     def update_done(self, persist_first=False):
         """
         :param persist_first: :class: `bool` save any changes
@@ -553,12 +575,8 @@ class Marker(object):
             return True
         elif not leaf and not self.done:
             logger.debug("not leaf and not done yet id: %s" % self.id)
-            children_markers = self.get_persisted_children()
-            done_markers = []
-            for marker in children_markers:
-                if marker and marker.done:
-                    done_markers.append(marker)
-            if len(done_markers) == len(self.children):
+
+            if self.are_all_children_done():
                 self.done = True
                 logger.debug("done now")
                 if self.callbacks:
