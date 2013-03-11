@@ -49,6 +49,7 @@ class ContextGrepHandler(webapp2.RequestHandler):
         query = self.request.get('query')
         batch_size = self.request.get('batch_size')
         group_size = self.request.get('group_size')
+        group_file_count = self.request.get('group_file_count', 10)
 
         if batch_size and batch_size is not None:
             batch_size = int(batch_size)
@@ -56,11 +57,15 @@ class ContextGrepHandler(webapp2.RequestHandler):
         if group_size and group_size is not None:
             group_size = int(group_size)
 
+        if group_file_count and group_file_count is not None:
+            group_file_count = int(group_file_count)
+
         curdir = os.getcwd()
         if grouper:
             ctx = context_grepp_grouper(query, curdir,
                                         group_size=group_size,
-                                        batch_size=batch_size)
+                                        batch_size=batch_size,
+                                        group_file_count=group_file_count)
         else:
             ctx = context_grepp(query, curdir)
         self.response.content_type = "text/json"
@@ -152,7 +157,17 @@ def context_grepp(query, directory):
 
 def context_grepp_grouper(query, directory,
                           group_size=None,
-                          batch_size=None):
+                          batch_size=None,
+                          group_file_count=5):
+    """Recursively walks the directory finding python files
+    and adding a task to the context with grep_file
+    as the target and the file path as the path argument.
+
+    :param group_size: :class: `int`
+    :param batch_size: :class: `int`
+    :param group_file_count: :class: `int` The number of files one task
+    will process.
+    """
     from furious import context
 
     ctx = context.Context(callbacks={
@@ -162,10 +177,9 @@ def context_grepp_grouper(query, directory,
         group_size=group_size,
         batch_size=batch_size)
 
-    for path in DirectoryWalker(directory):
-        if path.endswith('.py'):
-            ctx.add(target=grep_file, args=[query, path],
-                    callbacks={'success': log_results})
+    for paths in file_grouper(directory, group_count=group_file_count):
+        ctx.add(target=grep_list_of_files, args=[query, paths],
+                callbacks={'success': log_results})
 
     if ctx:
         ctx.start()
@@ -187,6 +201,31 @@ def grep_file(query, item):
         if re.search("{0}".format(query), line):
             results.append('{0}:{1} {2}'.format(item, index + 1, line))
     return results
+
+
+def grep_list_of_files(query, items):
+    results = []
+    for item in items:
+        results.extend(grep_file(query, item))
+
+    return results
+
+
+def file_grouper(directory, group_count=1):
+    if not group_count:
+        group_count = 1
+    else:
+        group_count = int(group_count)
+    grouped_files = []
+    for path in DirectoryWalker(directory):
+        if path.endswith('.py'):
+            grouped_files.append(path)
+        if len(grouped_files) == group_count:
+            yield grouped_files
+            grouped_files = []
+
+    if grouped_files:
+        yield grouped_files
 
 
 def log_results():
