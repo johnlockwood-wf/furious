@@ -15,6 +15,7 @@
 #
 
 import logging
+from google.appengine.api import memcache
 from google.appengine.ext.ndb import Future
 from google.appengine.ext import ndb
 
@@ -172,6 +173,10 @@ def _marker_persist(marker, save_leaves=True):
         # entity.
         result = mp.result
         mp.result = None
+
+        if mp.done:
+            memcache.set("done{0}".format(marker.id), True,
+                         namespace="__furious")
 
         put_future = mp.put_async()
         put_futures.append(put_future)

@@ -15,9 +15,23 @@
 #
 
 import logging
+from google.appengine.api import memcache
 from google.appengine.ext.ndb import Future
 from google.appengine.ext import ndb
 logger = logging.getLogger('marker_tree')
+
+
+def filter_known_done(ids):
+    known_done = memcache.get_multi(
+        ["done{0}".format(idx) for idx in ids],
+        namespace="__furious")
+    not_known_done = filter(lambda idx: "done{0}".format(idx)
+                            not in known_done, ids)
+    if len(not_known_done) < len(ids):
+        logger.debug("saved {0} db api calls with memcache".format(
+            len(ids) - len(not_known_done)
+        ))
+    return not_known_done
 
 
 def all_done(ids):
@@ -25,6 +39,9 @@ def all_done(ids):
     Wait until the first one that is returned that is not
     done or until all are returned and done.
     """
+    # Filter out known done ids
+    ids = filter_known_done(ids)
+    # Make list of keys
     keys = [ndb.Key('MarkerPersist', idx) for idx in ids]
     futures = ndb.get_multi_async(keys)
     while futures:

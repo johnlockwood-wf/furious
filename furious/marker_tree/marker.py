@@ -588,6 +588,7 @@ class Marker(object):
                     if leaf_combiner or internal_vertex_combiner:
                         # If results are going to be worked with,
                         # reload children markers with results attached.
+                        # TODO: continue if another request hasn't been here.
                         done_markers = self.get_persisted_children(
                             load_results=True)
 
@@ -605,6 +606,7 @@ class Marker(object):
                                 result_of_combined_internal_vertexes
 
                 count_marked_as_done(self.id)
+                # TODO: continue if another request hasn't been here.
                 self.persist()
                 self._update_done_in_progress = False
 
