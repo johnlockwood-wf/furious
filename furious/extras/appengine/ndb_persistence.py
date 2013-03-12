@@ -15,6 +15,7 @@
 #
 
 import logging
+import os
 from google.appengine.api import memcache
 from google.appengine.ext.ndb import Future
 from google.appengine.ext import ndb
@@ -320,3 +321,19 @@ def load_context(idx):
     """
     cp = ContextPersist.get_by_id(idx)
     return cp.data
+
+
+def reached_by_another_request(marker_id, key):
+    request_id = os.environ['REQUEST_ID_HASH']
+    reached_key = "reached{0}{1}".format(marker_id, key)
+    item = memcache.get(reached_key)
+    if item and item != request_id:
+        logger.debug(reached_key)
+        return True
+
+    return False
+
+
+def mark_reached(marker_id, key):
+    request_id = os.environ['REQUEST_ID_HASH']
+    memcache.set("reached{0}{1}".format(marker_id, key), request_id)

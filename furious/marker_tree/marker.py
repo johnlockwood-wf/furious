@@ -511,6 +511,15 @@ class Marker(object):
 
             return True
 
+    def has_another_reached(self, key):
+        key = "done_markers_loaded"
+        reached = persistence_module. \
+            reached_by_another_request(self.id, key)
+        if reached:
+            return True
+        persistence_module.mark_reached(self.id, key)
+        return False
+
     def update_done(self, persist_first=False):
         """
         :param persist_first: :class: `bool` save any changes
@@ -589,8 +598,15 @@ class Marker(object):
                         # If results are going to be worked with,
                         # reload children markers with results attached.
                         # TODO: continue if another request hasn't been here.
+
+                        if self.has_another_reached("combiners_reached"):
+                            return False
+
                         done_markers = self.get_persisted_children(
                             load_results=True)
+
+                        if self.has_another_reached("done_markers_loaded"):
+                            return False
 
                         internal_vertex_results = \
                             group_into_internal_vertex_results(
@@ -607,6 +623,10 @@ class Marker(object):
 
                 count_marked_as_done(self.id)
                 # TODO: continue if another request hasn't been here.
+
+                if self.has_another_reached("done_persist"):
+                    return False
+
                 self.persist()
                 self._update_done_in_progress = False
 
@@ -640,6 +660,10 @@ class Marker(object):
                 return parent_marker.update_done()
             # logger.error("group marker %s did not load" % group_id)
         else:
+
+            if self.has_another_reached("success_callback"):
+                return False
+
             logger.debug("top level reached, job complete")
             success_callback = None
             if self.callbacks:
