@@ -15,7 +15,7 @@
 #
 import logging
 import os
-from StringIO import StringIO
+import importlib
 
 import yaml
 
@@ -25,10 +25,6 @@ FURIOUS_YAML_NAMES = ['furious.yaml', 'furious.yml']
 PERSISTENCE_MODULES = {
     'ndb': 'furious.extras.appengine.ndb_persistence'
 }
-
-
-class BadModulePathError(Exception):
-    """Invalid module path."""
 
 
 class InvalidPersistenceModuleName(Exception):
@@ -55,39 +51,6 @@ class MissingYamlFile(Exception):
     """
 
 
-def module_import(module_path):
-    """Imports the module indicated in name
-
-    Args:
-        module_path: string representing a module path such as
-        'furious.config' or 'furious.extras.appengine.ndb_persistence'
-    Returns:
-        the module matching name of the last component, ie: for
-        'furious.extras.appengine.ndb_persistence' it returns a
-        reference to ndb_persistence
-    Raises:
-        BadModulePathError if the module is not found
-    """
-    try:
-        # Import whole module path.
-        module = __import__(module_path)
-
-        # Split into components: ['furious',
-        # 'extras','appengine','ndb_persistence'].
-        components = module_path.split('.')
-
-        # Starting at the second component, set module to a
-        # a reference to that component. at the end
-        # module with be the last component. In this case:
-        # ndb_persistence
-        for component in components[1:]:
-            module = getattr(module, component)
-        return module
-    except ImportError:
-        raise BadModulePathError(
-            'Unable to find module "%s".' % (module_path,))
-
-
 def get_persistence_module(name, known_modules=PERSISTENCE_MODULES):
     """Get a known persistence module or one where name is a module path
     Args:
@@ -99,7 +62,7 @@ def get_persistence_module(name, known_modules=PERSISTENCE_MODULES):
         or the module path that is name
     """
     module_path = known_modules.get(name) or name
-    module = module_import(module_path=module_path)
+    module = importlib.import_module(module_path)
     return module
 
 
