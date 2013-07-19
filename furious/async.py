@@ -67,14 +67,17 @@ The order of precedence is:
     3) options specified in the constructor.
     4) options specified by @defaults decorator.
 """
-
+import copy
 from functools import wraps
-
 import json
 
 from .job_utils import decode_callbacks
 from .job_utils import encode_callbacks
 from .job_utils import get_function_path_and_options
+from .job_utils import path_to_reference
+from .job_utils import reference_to_path
+
+from . import errors
 
 
 __all__ = ['ASYNC_DEFAULT_QUEUE', 'ASYNC_ENDPOINT', 'Async', 'defaults']
@@ -82,32 +85,13 @@ __all__ = ['ASYNC_DEFAULT_QUEUE', 'ASYNC_ENDPOINT', 'Async', 'defaults']
 
 ASYNC_DEFAULT_QUEUE = 'default'
 ASYNC_ENDPOINT = '/_ah/queue/async'
+MAX_DEPTH = 100
+MAX_RESTARTS = 10
+DISABLE_RECURSION_CHECK = -1
 
-
-class NotExecutedError(Exception):
-    """This Async has not yet been executed."""
-
-
-class NotExecutingError(Exception):
-    """This Async in not currently executing."""
-
-
-class AlreadyExecutedError(Exception):
-    """This Async has already been executed."""
-
-
-class AlreadyExecutingError(Exception):
-    """This Async is currently executing."""
-
-
-class Abort(Exception):
-    """This Async needs to be aborted immediately. Only an info level logging
-    message will be output about the aborted job.
-    """
-
-
-class AbortAndRestart(Exception):
-    """This Async needs to be aborted immediately and restarted."""
+DEFAULT_RETRY_OPTIONS = {
+    'task_retry_limit': MAX_RESTARTS
+}
 
 
 class Async(object):
@@ -117,26 +101,20 @@ class Async(object):
         # Make sure nothing is snuck in.
         _check_options(options)
 
-        self._id = options.get('id')
         self._update_job(target, args, kwargs)
 
         self.update_options(**options)
+
+        self._initialize_recursion_depth()
 
         self._execution_context = None
 
         self._executing = False
         self._executed = False
 
+        self._persistence_engine = None
+
         self._result = None
-
-    @property
-    def id(self):
-        return self._id
-
-    @id.setter
-    def id(self, value):
-        self._id = value
-        self._options['id'] = value
 
     @property
     def executed(self):
@@ -149,11 +127,11 @@ class Async(object):
     @executing.setter
     def executing(self, executing):
         if self._executed:
-            raise AlreadyExecutedError(
+            raise errors.AlreadyExecutedError(
                 'You can not execute an executed job.')
 
         if self._executing:
-            raise AlreadyExecutingError(
+            raise errors.AlreadyExecutingError(
                 'Job is already executing, can not set executing.')
 
         self._executing = executing
@@ -161,7 +139,7 @@ class Async(object):
     @property
     def result(self):
         if not self.executed:
-            raise NotExecutedError(
+            raise errors.NotExecutedError(
                 'You must execute this Async before getting its result.')
 
         return self._result
@@ -169,7 +147,7 @@ class Async(object):
     @result.setter
     def result(self, result):
         if not self._executing:
-            raise NotExecutingError(
+            raise errors.NotExecutingError(
                 'The Async must be executing to set its result.')
 
         self._result = result
@@ -178,7 +156,63 @@ class Async(object):
 
     @property
     def _function_path(self):
-        return self._options['job'][0]
+        return self.job[0]
+
+    @property
+    def job(self):
+        """job is stored as a (function path, args, kwargs) tuple."""
+        return self._options['job']
+
+    @property
+    def recursion_depth(self):
+        """Get the current recursion depth.  `None` indicates uninitialized
+        recursion info.
+        """
+        recursion_options = self._options.get('_recursion', {})
+        return recursion_options.get('current', None)
+
+    def _initialize_recursion_depth(self):
+        """Ensure recursion info is initialized, if not, initialize it."""
+        from furious.context import get_current_async
+
+        recursion_options = self._options.get('_recursion', {})
+
+        current_depth = recursion_options.get('current', 0)
+        max_depth = recursion_options.get('max', MAX_DEPTH)
+
+        try:
+            executing_async = get_current_async()
+
+            # If this async is within an executing async, use the depth off
+            # that async.  Otherwise use the depth set in the async's options.
+            current_depth = executing_async.recursion_depth
+
+            # If max_depth does not equal MAX_DEPTH, it is custom. Otherwise
+            # use the max_depth from the containing async.
+            if max_depth == MAX_DEPTH:
+                executing_options = executing_async.get_options().get(
+                    '_recursion', {})
+                max_depth = executing_options.get('max', max_depth)
+
+        except errors.NotInContextError:
+            # This Async is not being constructed inside an executing Async.
+            pass
+
+        # Store the recursion info.
+        self.update_options(_recursion={'current': current_depth,
+                                        'max': max_depth})
+
+    def check_recursion_depth(self):
+        """Check recursion depth, raise AsyncRecursionError if too deep."""
+        from furious.async import MAX_DEPTH
+
+        recursion_options = self._options.get('_recursion', {})
+        max_depth = recursion_options.get('max', MAX_DEPTH)
+
+        # Check if recursion check has been disabled, then check depth.
+        if (max_depth != DISABLE_RECURSION_CHECK and
+                self.recursion_depth > max_depth):
+            raise errors.AsyncRecursionError('Max recursion depth reached.')
 
     def _update_job(self, target, args, kwargs):
         """Specify the function this async job is to execute when run."""
@@ -195,8 +229,7 @@ class Async(object):
     def set_execution_context(self, execution_context):
         """Set the ExecutionContext this async is executing under."""
         if self._execution_context:
-            from .context import AlreadyInContextError
-            raise AlreadyInContextError
+            raise errors.AlreadyInContextError
 
         self._execution_context = execution_context
 
@@ -208,6 +241,10 @@ class Async(object):
         """Safely update this async job's configuration options."""
 
         _check_options(options)
+
+        if 'persistence_engine' in options:
+            options['persistence_engine'] = reference_to_path(
+                options['persistence_engine'])
 
         self._options.update(options)
 
@@ -231,15 +268,24 @@ class Async(object):
     def to_task(self):
         """Return a task object representing this async job."""
         from google.appengine.api.taskqueue import Task
+        from google.appengine.api.taskqueue import TaskRetryOptions
+
+        self._increment_recursion_level()
+        self.check_recursion_depth()
 
         url = "%s/%s" % (ASYNC_ENDPOINT, self._function_path)
 
         kwargs = {
             'url': url,
             'headers': self.get_headers().copy(),
-            'payload': json.dumps(self.to_dict()),
+            'payload': json.dumps(self.to_dict())
         }
-        kwargs.update(self.get_task_args())
+        kwargs.update(copy.deepcopy(self.get_task_args()))
+
+        # Set task_retry_limit
+        retry_options = copy.deepcopy(DEFAULT_RETRY_OPTIONS)
+        retry_options.update(kwargs.pop('retry_options', {}))
+        kwargs['retry_options'] = TaskRetryOptions(**retry_options)
 
         return Task(**kwargs)
 
@@ -267,66 +313,118 @@ class Async(object):
 
         # TODO: Return a "result" object.
 
+    def __deepcopy__(self, *args):
+        """In order to support callbacks being Async objects, we need to
+        support being deep copied.
+        """
+        return self
+
     def to_dict(self):
         """Return this async job as a dict suitable for json encoding."""
-        import copy
-
-        options = copy.deepcopy(self._options)
-
-        # JSON don't like datetimes.
-        eta = options.get('task_args', {}).get('eta')
-        if eta:
-            import time
-
-            options['task_args']['eta'] = time.mktime(eta.timetuple())
-
-        callbacks = self._options.get('callbacks')
-        if callbacks:
-            options['callbacks'] = encode_callbacks(callbacks)
-
-        #persistence layer may have assigned an id
-        options['id'] = self.id
-
-        return options
+        return encode_async_options(self)
 
     @classmethod
     def from_dict(cls, async):
         """Return an async job from a dict output by Async.to_dict."""
-        import copy
-
-        async_options = copy.deepcopy(async)
-
-        # JSON don't like datetimes.
-        eta = async_options.get('task_args', {}).get('eta')
-        if eta:
-            from datetime import datetime
-
-            async_options['task_args']['eta'] = datetime.fromtimestamp(eta)
+        async_options = decode_async_options(async)
 
         target, args, kwargs = async_options.pop('job')
 
-        # If there are callbacks, reconstitute them.
-        callbacks = async_options.get('callbacks', {})
-        if callbacks:
-            async_options['callbacks'] = decode_callbacks(callbacks)
-
         return cls(target, args, kwargs, **async_options)
 
-    def _restart(self):
-        """Restarts the executing Async.
-
-        If the Async is executing, then it will reset the _executing flag, and
-        restart this job. This means that the job will not necessarily execute
-        immediately, or on the same machine, as it goes back into the queue.
+    def _prepare_persistence_engine(self):
+        """Load the specified persistence engine, or the default if none is
+        set.
         """
+        if self._persistence_engine:
+            return
 
-        if not self._executing:
-            raise NotExecutingError("Must be executing to restart the job, "
-                                    "perhaps you want Async.start()")
+        persistence_engine = self._options.get('persistence_engine')
+        if persistence_engine:
+            self._persistence_engine = path_to_reference(persistence_engine)
+            return
 
-        self._executing = False
+        from .config import get_default_persistence_engine
 
-        return self.start()
+        self._persistence_engine = get_default_persistence_engine()
+
+    @property
+    def id(self):
+        """Return this Async's ID value."""
+        import uuid
+        return uuid.uuid4().hex
+
+    def persist_result(self):
+        """Store this Async's result in persistent storage."""
+        self._prepare_persistence_engine()
+
+        return self._persistence_engine.store_async_result(
+            self.id, self.result)
+
+    def _increment_recursion_level(self):
+        """Increment current_depth based on either defaults or the enclosing
+        Async.
+        """
+        # Update the recursion info.  This is done so that if an async created
+        # outside an executing context, or one previously created is later
+        # loaded from storage, that the "current" setting is correctly set.
+        self._initialize_recursion_depth()
+
+        recursion_options = self._options.get('_recursion', {})
+        current_depth = recursion_options.get('current', 0) + 1
+        max_depth = recursion_options.get('max', MAX_DEPTH)
+
+        # Increment and store
+        self.update_options(_recursion={'current': current_depth,
+                                        'max': max_depth})
+
+
+def async_from_options(options):
+    """Deserialize an Async or Async subclass from an options dict."""
+    _type = options.pop('_type', 'furious.async.Async')
+
+    _type = path_to_reference(_type)
+
+    return _type.from_dict(options)
+
+
+def encode_async_options(async):
+    """Encode Async options for JSON encoding."""
+    options = copy.deepcopy(async._options)
+
+    options['_type'] = reference_to_path(async.__class__)
+
+    # JSON don't like datetimes.
+    eta = options.get('task_args', {}).get('eta')
+    if eta:
+        import time
+
+        options['task_args']['eta'] = time.mktime(eta.timetuple())
+
+    callbacks = async._options.get('callbacks')
+    if callbacks:
+        options['callbacks'] = encode_callbacks(callbacks)
+
+    return options
+
+
+def decode_async_options(options):
+    """Decode Async options from JSON decoding."""
+    async_options = copy.deepcopy(options)
+
+    # JSON don't like datetimes.
+    eta = async_options.get('task_args', {}).get('eta')
+    if eta:
+        from datetime import datetime
+
+        async_options['task_args']['eta'] = datetime.fromtimestamp(eta)
+
+    # If there are callbacks, reconstitute them.
+    callbacks = async_options.get('callbacks', {})
+    if callbacks:
+        async_options['callbacks'] = decode_callbacks(callbacks)
+
+    return async_options
 
 
 def defaults(**options):

@@ -194,6 +194,21 @@ class MessageTestCase(unittest.TestCase):
 
 class MessageProcessorTestCase(unittest.TestCase):
 
+    def setUp(self):
+        super(MessageProcessorTestCase, self).setUp()
+
+        import os
+        import uuid
+
+        os.environ['REQUEST_ID_HASH'] = uuid.uuid4().hex
+
+    def tearDown(self):
+        super(MessageProcessorTestCase, self).tearDown()
+
+        import os
+
+        del os.environ['REQUEST_ID_HASH']
+
     @patch('furious.batcher.time')
     @patch('furious.batcher.memcache')
     def test_to_task_with_no_name_passed_in(self, memcache, time):
@@ -285,17 +300,23 @@ class MessageProcessorTestCase(unittest.TestCase):
 
         memcache.get.assert_called_once_with('agg-batch-processor')
 
+    @patch('google.appengine.api.taskqueue.TaskRetryOptions', autospec=True)
     @patch('google.appengine.api.taskqueue.Task', autospec=True)
     @patch('furious.batcher.time')
     @patch('furious.batcher.memcache')
-    def test_to_task_has_correct_arguments(self, memcache, time, task):
+    def test_to_task_has_correct_arguments(self, memcache, time, task,
+                                           task_retry):
         """Ensure that if no name is passed into the MessageProcessor that it
         creates a default unique name when creating the task.
         """
+        from furious.async import MAX_RESTARTS
         from furious.batcher import MessageProcessor
 
         memcache.get.return_value = 'current-batch'
         time.time.return_value = 100
+
+        task_retry_object = Mock()
+        task_retry.return_value = task_retry_object
 
         processor = MessageProcessor('something', queue='test_queue')
 
@@ -311,13 +332,19 @@ class MessageProcessorTestCase(unittest.TestCase):
                     'countdown': 30,
                     'name': 'processor-processor-current-batch-3'
                 },
-                "id": None,
+                '_recursion': {
+                    'current': 1,
+                    'max': 100
+                },
+                '_type': 'furious.batcher.MessageProcessor',
             }),
             'countdown': 30,
             'name': 'processor-processor-current-batch-3',
+            'retry_options': task_retry_object
         }
 
         task.assert_called_once_with(**task_args)
+        task_retry.assert_called_once_with(task_retry_limit=MAX_RESTARTS)
 
     @patch('furious.batcher.memcache')
     def test_curent_batch_key_exists_in_cache(self, cache):
@@ -421,7 +448,7 @@ class MessageIteratorTestCase(unittest.TestCase):
             self.assertRaises(StopIteration, iterator.next)
 
         queue.lease_tasks_by_tag.assert_called_once_with(
-            60, 1, tag='tag')
+            60, 1, tag='tag', deadline=10)
 
     def test_rerun_after_depletion_calls_once(self):
         """Ensure MessageIterator works when used manually."""
@@ -441,7 +468,7 @@ class MessageIteratorTestCase(unittest.TestCase):
             results = [payload for payload in iterator]
 
         queue.lease_tasks_by_tag.assert_called_once_with(
-            60, 1, tag='tag')
+            60, 1, tag='tag', deadline=10)
 
     def test_rerun_after_depletion_doesnt_delete_too_much(self):
         """Ensure MessageIterator works when used manually."""
@@ -470,8 +497,30 @@ class MessageIteratorTestCase(unittest.TestCase):
 
             # Lease should only have been called a single time.
             queue.lease_tasks_by_tag.assert_called_once_with(
-                60, 1, tag='tag')
+                60, 1, tag='tag', deadline=10)
 
             # The delete call should delete only the original work.
             iterator.delete_messages()
             queue.delete_tasks.assert_called_once_with([task])
+
+    def test_custom_deadline(self):
+        """Ensure that a custom deadline gets passed to lease_tasks."""
+        from furious.batcher import MessageIterator
+
+        payload = '["test"]'
+        task = Mock(payload=payload, tag='tag')
+
+        message_iterator = MessageIterator('tag', 'qn', 1, deadline=2)
+
+        with patch.object(message_iterator, 'queue') as queue:
+            queue.lease_tasks_by_tag.return_value = [task]
+
+            iterator = iter(message_iterator)
+            iterator.next()
+
+            self.assertRaises(StopIteration, iterator.next)
+            self.assertRaises(StopIteration, iterator.next)
+
+        queue.lease_tasks_by_tag.assert_called_once_with(
+            60, 1, tag='tag', deadline=2)
+

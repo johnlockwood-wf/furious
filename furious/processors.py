@@ -21,21 +21,15 @@ import logging
 
 from collections import namedtuple
 
-from .async import Abort
-from .async import AbortAndRestart
 from .async import Async
 from .context import Context
 from .context import get_current_async
-from furious.context import _local
-from furious.marker_tree.async_utils import handle_async_done
-from .job_utils import function_path_to_reference
+from .errors import Abort
+from .errors import AbortAndRestart
+from .job_utils import path_to_reference
 
 
 AsyncException = namedtuple('AsyncException', 'error args traceback exception')
-
-
-class AsyncError(Exception):
-    """The base class other Async errors can subclass."""
 
 
 def run_job():
@@ -55,7 +49,7 @@ def run_job():
     if kwargs is None:
         kwargs = {}
 
-    function = function_path_to_reference(function_path)
+    function = path_to_reference(function_path)
 
     try:
         async.executing = True
@@ -66,8 +60,7 @@ def run_job():
         return
     except AbortAndRestart as restart:
         logging.info('Async job was aborted and restarted: %r', restart)
-        async._restart()
-        return
+        raise
     except Exception as e:
         async.result = encode_exception(e)
 
@@ -77,28 +70,7 @@ def run_job():
 
     processor_result = results_processor()
     if isinstance(processor_result, (Async, Context)):
-
-        # Use async's id so the context's
-        # success callback gets hit when the this
-        # next async is done.
-        processor_result.id = async.id
-
-        if isinstance(processor_result, Context):
-            _local.get_local_context().registry.append(processor_result)
-            # If the context contained no tasks go ahead and
-            # mark this node as done and bubble up.
-            if not processor_result.will_completion_run():
-                # Clear the empty Context from the async result.
-                async._executing = True
-                async.result = None
-                async._executing = False
-                handle_async_done(async)
-            else:
-                processor_result.start()
-        else:
-            processor_result.start()
-    else:
-        handle_async_done(async)
+        processor_result.start()
 
 
 def encode_exception(exception):

@@ -50,7 +50,7 @@ class TestDefaultsDecorator(unittest.TestCase):
         """Ensure defaults decorator raise error if job in options."""
         from furious.async import defaults
 
-        options = {'id': None, 'job': 'me'}
+        options = {'job': 'me'}
 
         self.assertRaises(AssertionError, defaults, **options)
 
@@ -69,7 +69,7 @@ class TestDefaultsDecorator(unittest.TestCase):
         """
         from furious.async import defaults
 
-        options = {'id': None, 'job': 'me', 'other': 'option'}
+        options = {'job': 'me', 'other': 'option'}
 
         self.assertRaises(AssertionError, defaults, **options)
 
@@ -93,19 +93,34 @@ class TestDefaultsDecorator(unittest.TestCase):
 class TestAsync(unittest.TestCase):
     """Make sure Async produces correct Task objects."""
 
+    def setUp(self):
+        import os
+        import uuid
+        from furious.context import _local
+
+        os.environ['REQUEST_ID_HASH'] = uuid.uuid4().hex
+
+        local_context = _local.get_local_context()
+        local_context._executing_async_context = None
+
+    def tearDown(self):
+        import os
+
+        del os.environ['REQUEST_ID_HASH']
+
     def test_none_function(self):
         """Ensure passing None as function raises."""
         from furious.async import Async
-        from furious.job_utils import BadFunctionPathError
+        from furious.errors import BadObjectPathError
 
-        self.assertRaises(BadFunctionPathError, Async, None)
+        self.assertRaises(BadObjectPathError, Async, None)
 
     def test_empty_function_path(self):
         """Ensure passing None as function raises."""
         from furious.async import Async
-        from furious.job_utils import BadFunctionPathError
+        from furious.errors import BadObjectPathError
 
-        self.assertRaises(BadFunctionPathError, Async, '')
+        self.assertRaises(BadObjectPathError, Async, '')
 
     def test_job_params(self):
         """Ensure good args and kwargs generate a well-formed job tuple."""
@@ -114,7 +129,7 @@ class TestAsync(unittest.TestCase):
         job = ("test", [1, 2, 3], {'a': 1, 'b': 2, 'c': 3})
         async_job = Async(*job)
 
-        self.assertEqual(job, async_job._options['job'])
+        self.assertEqual(job, async_job.job)
 
     def test_no_args_or_kwargs(self):
         """Ensure no args and no kwargs generate a well-formed job tuple."""
@@ -124,7 +139,7 @@ class TestAsync(unittest.TestCase):
         async_job = Async(function)
 
         self.assertEqual(function, async_job._function_path)
-        self.assertEqual((function, None, None), async_job._options['job'])
+        self.assertEqual((function, None, None), async_job.job)
 
     def test_args_with_no_kwargs(self):
         """Ensure args and no kwargs generate a well-formed job tuple."""
@@ -133,7 +148,7 @@ class TestAsync(unittest.TestCase):
         job = ("test", (1, 2, 3))
         async_job = Async(*job)
 
-        self.assertEqual(job + (None,), async_job._options['job'])
+        self.assertEqual(job + (None,), async_job.job)
 
     def test_no_args_with_kwargs(self):
         """Ensure no args with kwargs generate a well-formed job tuple."""
@@ -142,7 +157,7 @@ class TestAsync(unittest.TestCase):
         job = ("test", None, {'a': 1, 'b': 'c', 'alpha': True})
         async_job = Async(*job)
 
-        self.assertEqual(job, async_job._options['job'])
+        self.assertEqual(job, async_job.job)
 
     def test_gets_callable_path(self):
         """Ensure the job tuple contains the callable path."""
@@ -157,7 +172,7 @@ class TestAsync(unittest.TestCase):
 
         self.assertEqual(
             ('furious.tests.test_async.some_function',) + job_args,
-            async_job._options['job'])
+            async_job.job)
 
     def test_none_args_and_kwargs(self):
         """Ensure args and kwargs may be None."""
@@ -166,7 +181,7 @@ class TestAsync(unittest.TestCase):
         job = ("something", None, None,)
         async_job = Async(*job)
 
-        self.assertEqual(job, async_job._options['job'])
+        self.assertEqual(job, async_job.job)
 
     def test_decorated_options(self):
         """Ensure the defaults decorator sets Async options."""
@@ -182,6 +197,7 @@ class TestAsync(unittest.TestCase):
         job = Async(some_function)
 
         options['job'] = ("furious.tests.test_async.some_function", None, None)
+        options['_recursion'] = {'current': 0, 'max': 100}
 
         self.assertEqual(options, job._options)
 
@@ -202,6 +218,7 @@ class TestAsync(unittest.TestCase):
         options['other'] = 'abc'
 
         options['job'] = ("furious.tests.test_async.some_function", None, None)
+        options['_recursion'] = {'current': 0, 'max': 100}
 
         self.assertEqual(options, job._options)
 
@@ -221,7 +238,7 @@ class TestAsync(unittest.TestCase):
         AlreadyInContextError.
         """
         from furious.async import Async
-        from furious.context import AlreadyInContextError
+        from furious.errors import AlreadyInContextError
 
         async = Async(target=dir)
         async.set_execution_context(object())
@@ -239,6 +256,8 @@ class TestAsync(unittest.TestCase):
 
         options['job'] = ("nonexistant", None, None)
 
+        options['_recursion'] = {'current': 0, 'max': 100}
+
         self.assertEqual(options, job._options)
 
     def test_update_options_supersede_init_opts(self):
@@ -255,6 +274,8 @@ class TestAsync(unittest.TestCase):
         options['other'] = 'stuff'
 
         options['job'] = ("nonexistant", None, None)
+
+        options['_recursion'] = {'current': 0, 'max': 100}
 
         self.assertEqual(options, job._options)
 
@@ -325,17 +346,28 @@ class TestAsync(unittest.TestCase):
 
         self.assertEqual({}, job.get_task_args())
 
+    def test_deepcopy(self):
+        """Make sure you can deepcopy an Async."""
+        import copy
+
+        from furious.async import Async
+
+        job = Async(dir)
+        copy.deepcopy(job)
+
     def test_to_dict(self):
         """Ensure to_dict returns a dictionary representation of the Async."""
         from furious.async import Async
 
         task_args = {'other': 'zzz', 'nested': 1}
         headers = {'some': 'thing', 'fun': 1}
-        options = {'id': None, 'headers': headers, 'task_args': task_args}
+        options = {'headers': headers, 'task_args': task_args}
 
         job = Async('nonexistant', **options.copy())
 
         options['job'] = ('nonexistant', None, None)
+        options['_recursion'] = {'current': 0, 'max': 100}
+        options['_type'] = 'furious.async.Async'
 
         self.assertEqual(options, job.to_dict())
 
@@ -343,7 +375,7 @@ class TestAsync(unittest.TestCase):
         """Ensure to_dict correctly encodes callbacks."""
         from furious.async import Async
 
-        options = {'id': None, 'callbacks': {
+        options = {'callbacks': {
             'success': self.__class__.test_to_dict_with_callbacks,
             'failure': "failure_function",
             'exec': Async(target=dir)
@@ -356,8 +388,12 @@ class TestAsync(unittest.TestCase):
             'success': ("furious.tests.test_async."
                         "TestAsync.test_to_dict_with_callbacks"),
             'failure': "failure_function",
-            'exec': {'id': None, 'job': ('dir', None, None)}
+            'exec': {'job': ('dir', None, None),
+                     '_recursion': {'current': 0, 'max': 100},
+                     '_type': 'furious.async.Async'}
         }
+        options['_recursion'] = {'current': 0, 'max': 100}
+        options['_type'] = 'furious.async.Async'
 
         self.assertEqual(options, job.to_dict())
 
@@ -369,10 +405,10 @@ class TestAsync(unittest.TestCase):
         job = ('test', None, None)
         task_args = {'other': 'zzz', 'nested': 1}
 
-        options = {'id': None, 'job': job, 'headers': headers,
-                   'task_args': task_args}
+        options = {'job': job, 'headers': headers, 'task_args': task_args}
 
         async_job = Async.from_dict(options)
+
         self.assertEqual(headers, async_job.get_headers())
         self.assertEqual(task_args, async_job.get_task_args())
         self.assertEqual(job[0], async_job._function_path)
@@ -386,10 +422,10 @@ class TestAsync(unittest.TestCase):
             'success': ("furious.tests.test_async."
                         "TestAsync.test_to_dict_with_callbacks"),
             'failure': "dir",
-            'exec': {'id': None, 'job': ('dir', None, None)}
+            'exec': {'job': ('dir', None, None)}
         }
 
-        options = {'id': None, 'job': job, 'callbacks': callbacks}
+        options = {'job': job, 'callbacks': callbacks}
 
         async_job = Async.from_dict(options)
 
@@ -401,9 +437,12 @@ class TestAsync(unittest.TestCase):
         callbacks = async_job.get_callbacks()
         exec_callback = callbacks.pop('exec')
 
+        correct_options = {'job': ('dir', None, None),
+                           '_recursion': {'current': 0, 'max': 100},
+                           '_type': 'furious.async.Async'}
+
         self.assertEqual(check_callbacks, callbacks)
-        self.assertEqual({'id': None, 'job': ('dir', None, None)},
-            exec_callback.to_dict())
+        self.assertEqual(correct_options, exec_callback.to_dict())
 
     def test_reconstitution(self):
         """Ensure to_dict(job.from_dict()) returns the same thing."""
@@ -412,8 +451,14 @@ class TestAsync(unittest.TestCase):
         headers = {'some': 'thing', 'fun': 1}
         job = ('test', None, None)
         task_args = {'other': 'zzz', 'nested': 1}
-        options = {'id': None, 'job': job, 'headers': headers,
-                   'task_args': task_args}
+        options = {
+            'job': job,
+            'headers': headers,
+            'task_args': task_args,
+            'persistence_engine': 'furious.extras.appengine.ndb_persistence',
+            '_recursion': {'current': 1, 'max': 100},
+            '_type': 'furious.async.Async',
+        }
 
         async_job = Async.from_dict(options)
 
@@ -444,8 +489,7 @@ class TestAsync(unittest.TestCase):
         expected_url = "%s/%s" % (ASYNC_ENDPOINT, 'test')
 
         task_args = {'eta': eta_posix}
-        options = {'id':None, 'job': job, 'headers': headers,
-                   'task_args': task_args}
+        options = {'job': job, 'headers': headers, 'task_args': task_args}
 
         task = Async.from_dict(options).to_task()
 
@@ -462,13 +506,17 @@ class TestAsync(unittest.TestCase):
 
         options['task_args']['eta'] = datetime.datetime.fromtimestamp(
             eta_posix)
+
+        options['_recursion'] = {'current': 1, 'max': 100}
+        options['_type'] = 'furious.async.Async'
+
         self.assertEqual(
             options, Async.from_dict(json.loads(task.payload)).get_options())
 
     def test_getting_result_fails(self):
         """Ensure attempting to get the result before executing raises."""
         from furious.async import Async
-        from furious.async import NotExecutedError
+        from furious.errors import NotExecutedError
 
         job = Async(target=dir)
 
@@ -492,7 +540,7 @@ class TestAsync(unittest.TestCase):
     def test_setting_result_fails(self):
         """Ensure the result can not be set without the execute flag set."""
         from furious.async import Async
-        from furious.async import NotExecutingError
+        from furious.errors import NotExecutingError
 
         job = Async(target=dir)
 
@@ -575,39 +623,206 @@ class TestAsync(unittest.TestCase):
         # TODO: Check that the task is the same.
         # self.assertEqual(task, queue_mock.add.call_args)
 
-    @patch('furious.async.Async.start')
-    def test_restart(self, mock_start):
-        """Ensure that _restart() calls Async.start() again."""
+    def test_update_recursion_level_defaults(self):
+        """Ensure that defaults (1, MAX_DEPTH) are set correctly."""
         from furious.async import Async
+        from furious.async import MAX_DEPTH
 
         async_job = Async("something")
-        async_job._executing = True
 
-        async_job._restart()
+        async_job._increment_recursion_level()
 
-        mock_start.assert_called_once()
+        options = async_job.get_options()['_recursion']
+        self.assertEqual(1, options['current'])
+        self.assertEqual(MAX_DEPTH, options['max'])
 
-    def test_restart_not_started(self):
-        """Ensure that _restart() raises a NotExecutingError when restarting
-        before started.
+    def test_check_recursion_level_execution_context(self):
+        """Ensure that when there is an existing Async that the correct values
+        are pulled and incremented from there, not the defaults.
         """
         from furious.async import Async
-        from furious.async import NotExecutingError
+        from furious.context import execution_context_from_async
 
-        async_job = Async("something")
+        context_async = Async("something", _recursion={'current': 42,
+                                                       'max': 77})
+        new_async = Async("something_else")
 
-        self.assertRaises(NotExecutingError, async_job._restart,)
+        with execution_context_from_async(context_async):
+            new_async._increment_recursion_level()
 
-    def test_restart_finished_fails(self):
-        """Ensure that calling _restart() on a finished Async raises a
-        NotExecutingError.
+        self.assertEqual(43, new_async.recursion_depth)
+
+        options = new_async.get_options()['_recursion']
+        self.assertEqual(77, options['max'])
+
+    def test_check_recursion_level_overridden_interior_max(self):
+        """Ensure that when there is an existing Async that the correct values
+        are pulled and incremented from there, unless the interior Async sets
+        it's own custom max.
         """
         from furious.async import Async
-        from furious.async import NotExecutingError
+        from furious.context import execution_context_from_async
+
+        context_async = Async("something", _recursion={'current': 42,
+                                                       'max': 77})
+
+        new_async = Async("something_else", _recursion={'max': 89})
+
+        with execution_context_from_async(context_async):
+            new_async._increment_recursion_level()
+
+        options = new_async.get_options()['_recursion']
+        self.assertEqual(43, options['current'])
+        self.assertEqual(89, options['max'])
+
+    def test_check_recursion_depth_over_limit(self):
+        """Ensure that when over the recusion limit, calling
+        check_recursion_depth raises a AsyncRecursionError.
+        """
+        from furious.async import Async
+        from furious.errors import AsyncRecursionError
+
+        async = Async("something", _recursion={'current': 8, 'max': 7})
+
+        self.assertRaises(AsyncRecursionError, async.check_recursion_depth)
+
+    def test_check_recursion_disabled(self):
+        """Ensure that when recursion max depth is explicitly set to -1, then
+        the recursion check is disabled.
+
+        There are no explicit asserts in this test because the
+        check_recursion_depth() method would throw an exception if this
+        functionality wasn't working.
+        """
+        from furious.async import Async
+
+        async_job = Async("something", _recursion={'current': 101,
+                                                   'max': -1})
+
+        async_job.check_recursion_depth()
+
+    def test_retry_default(self):
+        """Ensure that when no task_retry_limit specified, that the default is
+        set.
+        """
+        from furious.async import Async
+        from furious.async import MAX_RESTARTS
 
         async_job = Async("something")
-        async_job._executing = True
-        async_job.result = 'result'
+        task = async_job.to_task()
 
-        self.assertRaises(NotExecutingError, async_job._restart,)
+        self.assertEqual(MAX_RESTARTS, task.retry_options.task_retry_limit)
+
+    def test_retry_custom(self):
+        """Ensure that when a custom retry limit is set, that it's
+        propagated.
+        """
+        from furious.async import Async
+
+        async_job = Async("something",
+                          task_args={'retry_options': {'task_retry_limit': 5}})
+        task = async_job.to_task()
+
+        self.assertEqual(5, task.retry_options.task_retry_limit)
+
+    def test_retry_value_without_to_task(self):
+        """Ensure that when you encode the options, the retry_options are not
+        affected.
+        """
+        from furious.async import Async
+        from furious.async import encode_async_options
+
+        async_job = Async("something",
+                          task_args={'retry_options': {'task_retry_limit': 5}})
+        options = encode_async_options(async_job)
+
+        self.assertEqual(
+            5, options['task_args']['retry_options']['task_retry_limit'])
+
+    def test_retry_value_with_to_task(self):
+        """Ensure that calling to_task doesn't affect the options when
+        encoding.
+        """
+        from furious.async import Async
+        from furious.async import encode_async_options
+
+        async_job = Async("something",
+                          task_args={'retry_options': {'task_retry_limit': 5}})
+        async_job.to_task()
+        options = encode_async_options(async_job)
+
+        self.assertEqual(
+            5, options['task_args']['retry_options']['task_retry_limit'])
+
+    def test_retry_value_is_decodable(self):
+        """Ensure that from_dict is the inverse of to_dict when retry options
+        are given.
+        """
+        from furious.async import Async
+
+        async_job = Async("something",
+                          task_args={'retry_options': {'task_retry_limit': 5}})
+        new_async_job = Async.from_dict(async_job.to_dict())
+
+        self.assertEqual(async_job.to_dict(), new_async_job.to_dict())
+
+    def test_used_async_retry_value_is_decodable(self):
+        """Ensure that from_dict is the inverse of to_dict when retry options
+        are given and the async has be cast to task.
+        """
+        from furious.async import Async
+
+        async_job = Async("something",
+                          task_args={'retry_options': {'task_retry_limit': 5}})
+        async_job.to_dict()
+
+        new_async_job = Async.from_dict(async_job.to_dict())
+
+        self.assertEqual(async_job.to_dict(), new_async_job.to_dict())
+
+
+class TestAsyncFromOptions(unittest.TestCase):
+    """Ensure async_from_options() works correctly."""
+
+    def setUp(self):
+        import os
+        import uuid
+
+        os.environ['REQUEST_ID_HASH'] = uuid.uuid4().hex
+
+    def tearDown(self):
+        import os
+
+        del os.environ['REQUEST_ID_HASH']
+
+    def test_no_type(self):
+        """Ensure that if not _type is in options, that it defaults to
+        furious.async.Async.
+        """
+        from furious.async import Async
+        from furious.async import async_from_options
+
+        async_job = Async(dir)
+
+        options = async_job.to_dict()
+        options.pop('_type')
+
+        result = async_from_options(options)
+
+        self.assertIsInstance(result, Async)
+
+    def test_has_type(self):
+        """Ensure that if _type is not furious.async.Async that the correct
+        subclass is instantiated.
+        """
+        from furious.async import async_from_options
+        from furious.batcher import MessageProcessor
+
+        async_job = MessageProcessor(dir)
+
+        options = async_job.to_dict()
+
+        result = async_from_options(options)
+
+        self.assertIsInstance(result, MessageProcessor)
 

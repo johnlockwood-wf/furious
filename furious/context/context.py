@@ -43,19 +43,13 @@ Usage:
 """
 
 import uuid
-from furious.marker_tree.marker import Marker
-from furious.marker_tree.wide_tree_marker import WideTreeMarker
 
 from ..job_utils import decode_callbacks
 from ..job_utils import encode_callbacks
-from ..job_utils import function_path_to_reference
-from ..job_utils import get_function_path_and_options
+from ..job_utils import path_to_reference
+from ..job_utils import reference_to_path
 
-
-class ContextAlreadyStartedError(Exception):
-    """Attempt to set context on an Async that is already executing in a
-    context.
-    """
+from .. import errors
 
 
 class Context(object):
@@ -66,12 +60,18 @@ class Context(object):
     """
     def __init__(self, **options):
         self._tasks = []
-
-        idx = options.get('id')
-        if not idx:
-            idx = uuid.uuid4().hex
+        self._task_ids = []
         self._tasks_inserted = False
-        self._id = idx
+
+        id = options.get('id')
+        if not id:
+            id = uuid.uuid4().hex
+        self._id = id
+
+        self._persistence_engine = options.get('persistence_engine', None)
+        if self._persistence_engine:
+            options['persistence_engine'] = reference_to_path(
+                self._persistence_engine)
 
         self._options = options
 
@@ -79,15 +79,9 @@ class Context(object):
         if not callable(self._insert_tasks):
             raise TypeError('You must provide a valid insert_tasks function.')
 
-        self._persistence_engine = options.pop('persistence_engine', None)
-
     @property
     def id(self):
         return self._id
-
-    @id.setter
-    def id(self, value):
-        self._id = value
 
     def __enter__(self):
         return self
@@ -98,30 +92,16 @@ class Context(object):
 
         return False
 
-    def will_completion_run(self):
-        if self._tasks:
-            if self._options.get('callbacks'):
-                return True
-        return False
-
     def _handle_tasks(self):
         """Convert all Async's into tasks, then insert them into queues."""
         if self._tasks_inserted:
-            raise ContextAlreadyStartedError(
+            raise errors.ContextAlreadyStartedError(
                 "This Context has already had its tasks inserted.")
-
-        # If the user needs context callbacks called,
-        # construct a marker tree which assigns ids to all
-        # of the Asyncs.
-        if self.will_completion_run():
-            root_marker = WideTreeMarker.make_marker_tree_for_context(self)
-
-            # Persist the marker tree.
-            root_marker.persist()
 
         task_map = self._get_tasks_by_queue()
         for queue, tasks in task_map.iteritems():
-            self._insert_tasks(tasks, queue=queue)
+            for batch in _task_batcher(tasks):
+                self._insert_tasks(batch, queue=queue)
 
         self._tasks_inserted = True
 
@@ -146,7 +126,7 @@ class Context(object):
         from ..batcher import Message
 
         if self._tasks_inserted:
-            raise ContextAlreadyStartedError(
+            raise errors.ContextAlreadyStartedError(
                 "This Context has already had its tasks inserted.")
 
         if not isinstance(target, (Async, Message)):
@@ -157,7 +137,7 @@ class Context(object):
         return target
 
     def start(self):
-        """Insert this Context's tasks executing."""
+        """Insert this Context's tasks so they start executing."""
         if self._tasks:
             self._handle_tasks()
 
@@ -185,11 +165,10 @@ class Context(object):
         options = copy.deepcopy(self._options)
 
         if self._insert_tasks:
-            options['insert_tasks'], _ = get_function_path_and_options(
-                self._insert_tasks)
+            options['insert_tasks'] = reference_to_path(self._insert_tasks)
 
         if self._persistence_engine:
-            options['persistence_engine'], _ = get_function_path_and_options(
+            options['persistence_engine'] = reference_to_path(
                 self._persistence_engine)
 
         options.update({
@@ -215,12 +194,12 @@ class Context(object):
 
         insert_tasks = context_options.pop('insert_tasks', None)
         if insert_tasks:
-            context_options['insert_tasks'] = function_path_to_reference(
-                insert_tasks)
+            context_options['insert_tasks'] = path_to_reference(insert_tasks)
 
+        # The constructor expects a reference to the persistence engine.
         persistence_engine = context_options.pop('persistence_engine', None)
         if persistence_engine:
-            context_options['persistence_engine'] = function_path_to_reference(
+            context_options['persistence_engine'] = path_to_reference(
                 persistence_engine)
 
         # If there are callbacks, reconstitute them.
@@ -248,13 +227,24 @@ def _insert_tasks(tasks, queue, transactional=False):
 
     try:
         taskqueue.Queue(name=queue).add(tasks, transactional=transactional)
-    except (taskqueue.TransientError,
+    except (taskqueue.BadTaskStateError,
             taskqueue.TaskAlreadyExistsError,
-            taskqueue.TombstonedTaskError):
+            taskqueue.TombstonedTaskError,
+            taskqueue.TransientError):
         count = len(tasks)
         if count <= 1:
             return
 
         _insert_tasks(tasks[:count / 2], queue, transactional)
         _insert_tasks(tasks[count / 2:], queue, transactional)
+
+
+def _task_batcher(tasks):
+    """Batches large task lists into groups of 100 so that they can all be
+    inserted.
+    """
+    from itertools import izip_longest
+
+    args = [iter(tasks)] * 100
+    return ([task for task in group if task] for group in izip_longest(*args))
 

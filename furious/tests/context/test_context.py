@@ -76,13 +76,6 @@ class TestContext(unittest.TestCase):
 
         self.assertTrue(Context().id)
 
-    def test_context_sets_id(self):
-        from furious.context import Context
-
-        ctx = Context()
-        ctx.id = 5
-        self.assertEqual(ctx.id, 5)
-
     def test_context_gets_assigned_id(self):
         """Ensure a new Context keeps its assigned id."""
         from furious.context import Context
@@ -234,7 +227,9 @@ class TestContext(unittest.TestCase):
                 'success': ("furious.tests.context.test_context."
                             "TestContext.test_to_dict_with_callbacks"),
                 'failure': "failure_function",
-                'exec': {'id': None, 'job': ('dir', None, None)}
+                'exec': {'job': ('dir', None, None),
+                         '_recursion': {'current': 0, 'max': 100},
+                         '_type': 'furious.async.Async'}
             }
         })
 
@@ -254,7 +249,7 @@ class TestContext(unittest.TestCase):
             'random_option': 'avalue',
             '_tasks_inserted': True,
             '_task_ids': [1, 2, 3, 4],
-            'persistence_engine': 'furious.context.Context'
+            'persistence_engine': 'furious.context.context.Context'
         }
 
         context = Context.from_dict(options)
@@ -287,8 +282,12 @@ class TestContext(unittest.TestCase):
         callbacks = context._options.get('callbacks')
         exec_callback = callbacks.pop('exec')
 
+        correct_dict = {'job': ('id', None, None),
+                        '_recursion': {'current': 0, 'max': 100},
+                        '_type': 'furious.async.Async'}
+
         self.assertEqual(check_callbacks, callbacks)
-        self.assertEqual({'job': ('id', None, None),'id': None}, exec_callback.to_dict())
+        self.assertEqual(correct_dict, exec_callback.to_dict())
 
     def test_reconstitution(self):
         """Ensure to_dict(job.from_dict()) returns the same thing."""
@@ -297,7 +296,8 @@ class TestContext(unittest.TestCase):
         options = {
             'id': 123098,
             'insert_tasks': 'furious.context.context._insert_tasks',
-            'persistence_engine': 'furious.job_utils.get_function_path_and_options',
+            'persistence_engine':
+            'furious.job_utils.get_function_path_and_options',
             '_tasks_inserted': True,
             '_task_ids': []
         }
@@ -342,54 +342,6 @@ class TestContext(unittest.TestCase):
         persistence_engine.load_context.assert_called_once_with('ABC123')
         self.assertEqual('ABC123', context.id)
 
-    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
-    def test_context_fails_to_start_twice(self, queue_add_mock):
-        from furious.context import Context
-        from furious.context.context import ContextAlreadyStartedError
-        ctx = Context()
-        ctx.add('test', args=[1, 2])
-        ctx.start()
-        self.assertRaises(ContextAlreadyStartedError, ctx.add,
-                          'test', args=[1, 2])
-        self.assertRaises(ContextAlreadyStartedError, ctx.start)
-
-    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
-    def test_will_completion_run(self, queue_add_mock):
-        """Ensure context.will_completion_run correctly identifies
-        the conditions under which completion callbacks will be
-        called or task completion events will bubble up to the top.
-
-        """
-        from furious.context import Context
-        from furious.extras.callbacks import small_aggregated_results_success_callback
-        from furious.extras.combiners import lines_combiner
-
-        context_callbacks = {
-            'success': small_aggregated_results_success_callback,
-            'internal_vertex_combiner': lines_combiner,
-            'leaf_combiner': lines_combiner
-        }
-
-        # No tasks, even with callbacks, does not complete.
-        ctx = Context(callbacks=context_callbacks)
-        self.assertFalse(ctx.will_completion_run())
-
-        # No callbacks, does not complete
-        ctx = Context()
-        ctx.add('test', args=[1, 2])
-        self.assertFalse(ctx.will_completion_run())
-
-        # Context is a sub-context, but not given
-        # callbacks, does not complete.
-        ctx = Context(id="big_job,sub_context",)
-        ctx.add('test', args=[1, 2])
-        self.assertFalse(ctx.will_completion_run())
-
-        # Callbacks set, completion runs.
-        ctx = Context(callbacks=context_callbacks)
-        ctx.add('test', args=[1, 2])
-        self.assertTrue(ctx.will_completion_run())
-
 
 class TestInsertTasks(unittest.TestCase):
     """Test that _insert_tasks behaves as expected."""
@@ -422,30 +374,164 @@ class TestInsertTasks(unittest.TestCase):
                                                transactional=False)
 
     @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
-    def test_task_add_error(self, queue_add_mock):
-        """Ensure an exception doesn't get raised from add."""
+    def test_task_add_error_TransientError(self, queue_add_mock):
+        """Ensure a TransientError doesn't get raised from add."""
         from furious.context.context import _insert_tasks
 
-        def raise_transient(*args, **kwargs):
+        def raise_error(*args, **kwargs):
             from google.appengine.api import taskqueue
             raise taskqueue.TransientError()
 
-        queue_add_mock.side_effect = raise_transient
+        queue_add_mock.side_effect = raise_error
 
         _insert_tasks(('A',), 'AbCd')
         queue_add_mock.assert_called_once_with(('A',), transactional=False)
 
     @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
-    def test_batches_get_split(self, queue_add_mock):
-        """Ensure a batches get split and retried on errors."""
+    def test_batches_get_split_TransientError(self, queue_add_mock):
+        """Ensure a batches get split and retried on TransientErrors."""
         from furious.context.context import _insert_tasks
 
-        def raise_transient(*args, **kwargs):
+        def raise_error(*args, **kwargs):
             from google.appengine.api import taskqueue
             raise taskqueue.TransientError()
 
-        queue_add_mock.side_effect = raise_transient
+        queue_add_mock.side_effect = raise_error
 
         _insert_tasks(('A', 1, 'B'), 'AbCd')
         self.assertEqual(5, queue_add_mock.call_count)
+
+    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    def test_task_add_error_BadTaskStateError(self, queue_add_mock):
+        """Ensure a BadTaskStateError doesn't get raised from add."""
+        from furious.context.context import _insert_tasks
+
+        def raise_error(*args, **kwargs):
+            from google.appengine.api import taskqueue
+            raise taskqueue.BadTaskStateError()
+
+        queue_add_mock.side_effect = raise_error
+
+        _insert_tasks(('A',), 'AbCd')
+        queue_add_mock.assert_called_once_with(('A',), transactional=False)
+
+    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    def test_batches_get_split_BadTaskStateError(self, queue_add_mock):
+        """Ensure a batches get split and retried on BadTaskStateErrors."""
+        from furious.context.context import _insert_tasks
+
+        def raise_error(*args, **kwargs):
+            from google.appengine.api import taskqueue
+            raise taskqueue.BadTaskStateError()
+
+        queue_add_mock.side_effect = raise_error
+
+        _insert_tasks(('A', 1, 'B'), 'AbCd')
+        self.assertEqual(5, queue_add_mock.call_count)
+
+    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    def test_task_add_error_TaskAlreadyExistsError(self, queue_add_mock):
+        """Ensure a TaskAlreadyExistsError doesn't get raised from add."""
+        from furious.context.context import _insert_tasks
+
+        def raise_error(*args, **kwargs):
+            from google.appengine.api import taskqueue
+            raise taskqueue.TaskAlreadyExistsError()
+
+        queue_add_mock.side_effect = raise_error
+
+        _insert_tasks(('A',), 'AbCd')
+        queue_add_mock.assert_called_once_with(('A',), transactional=False)
+
+    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    def test_batches_get_split_TaskAlreadyExistsError(self, queue_add_mock):
+        """Ensure a batches get split and retried on TaskAlreadyExistsErrors.
+        """
+        from furious.context.context import _insert_tasks
+
+        def raise_error(*args, **kwargs):
+            from google.appengine.api import taskqueue
+            raise taskqueue.TaskAlreadyExistsError()
+
+        queue_add_mock.side_effect = raise_error
+
+        _insert_tasks(('A', 1, 'B'), 'AbCd')
+        self.assertEqual(5, queue_add_mock.call_count)
+
+    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    def test_task_add_error_TombstonedTaskError(self, queue_add_mock):
+        """Ensure a TombstonedTaskError doesn't get raised from add."""
+        from furious.context.context import _insert_tasks
+
+        def raise_error(*args, **kwargs):
+            from google.appengine.api import taskqueue
+            raise taskqueue.TombstonedTaskError()
+
+        queue_add_mock.side_effect = raise_error
+
+        _insert_tasks(('A',), 'AbCd')
+        queue_add_mock.assert_called_once_with(('A',), transactional=False)
+
+    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    def test_batches_get_split_TombstonedTaskError(self, queue_add_mock):
+        """Ensure a batches get split and retried on TombstonedTaskErrors."""
+        from furious.context.context import _insert_tasks
+
+        def raise_error(*args, **kwargs):
+            from google.appengine.api import taskqueue
+            raise taskqueue.TombstonedTaskError()
+
+        queue_add_mock.side_effect = raise_error
+
+        _insert_tasks(('A', 1, 'B'), 'AbCd')
+        self.assertEqual(5, queue_add_mock.call_count)
+
+
+class TestTaskBatcher(unittest.TestCase):
+
+    def test_no_tasks(self):
+        """Ensure that when to tasks are passed in, no tasks are returned."""
+        from furious.context.context import _task_batcher
+
+        self.assertEqual([], list(_task_batcher([])))
+
+    def test_one_task(self):
+        """Ensure that when one task is passed in, only one batch is returned
+        with one task in it.
+        """
+        from furious.context.context import _task_batcher
+
+        tasks = [1]
+
+        result = list(_task_batcher(tasks))
+
+        self.assertEqual(1, len(result))
+        self.assertEqual(1, len(result[0]))
+
+    def test_less_than_100_tasks(self):
+        """Ensure that when less than 100 tasks are passed in, only one batch
+        is returned with all the tasks in it.
+        """
+        from furious.context.context import _task_batcher
+
+        tasks = 'a' * 99
+
+        result = list(_task_batcher(tasks))
+
+        self.assertEqual(1, len(result))
+        self.assertEqual(len(tasks), len(result[0]))
+
+    def test_more_than_100_tasks(self):
+        """Ensure that when less than 100 tasks are passed in, only one batch
+        is returned with all the tasks in it.
+        """
+        from furious.context.context import _task_batcher
+
+        tasks = 'a' * 101
+
+        result = list(_task_batcher(tasks))
+
+        self.assertEqual(2, len(result))
+        self.assertEqual(100, len(result[0]))
+        self.assertEqual(1, len(result[1]))
 
