@@ -50,23 +50,35 @@ runner.run()
 
 import base64
 from collections import defaultdict
+import logging
 import os
+import random
 import uuid
 
 from google.appengine.api import taskqueue
+from google.appengine.api.apiproxy_stub_map import apiproxy
 
 from furious.context._local import _clear_context
 from furious.handlers import process_async_task
 
-__all__ = ['run', 'run_queue', 'Runner', 'add_tasks', 'get_tasks', 'purge_tasks',
-           'get_queue_names', 'get_pull_queue_names', 'get_push_queue_names']
+__all__ = ['run', 'run_queue', 'Runner', 'add_tasks', 'get_tasks',
+           'purge_tasks', 'get_queue_names', 'get_pull_queue_names',
+           'get_push_queue_names']
 
 
-def run_queue(taskq_service, queue_name):
+def run_queue(taskq_service, queue_name, non_furious_url_prefixes=None,
+              non_furious_handler=None):
     """Get the tasks from a queue.  Clear the queue, and run each task.
 
     If tasks are reinserted into this queue, this function needs to be called
     again for them to run.
+
+    :param taskqueue_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param queue_name: :class: `str`
+    :param non_furious_url_prefixes: :class: `list` of url prefixes that the
+                                 furious task runner will run.
+    :param non_furious_handler: :class: `func` handler for non furious tasks to
+                                run within.
     """
 
     # Get tasks and clear them
@@ -77,14 +89,15 @@ def run_queue(taskq_service, queue_name):
     num_processed = 0
 
     for task in tasks:
-        _execute_task(task)
+        _execute_task(task, non_furious_url_prefixes, non_furious_handler)
 
         num_processed += 1
 
     return num_processed
 
 
-def run(taskq_service, queue_names=None, max_iterations=None):
+def run(taskq_service=None, queue_names=None, max_iterations=None,
+        non_furious_url_prefixes=None, non_furious_handler=None):
     """
     Run all the tasks in queues, limited by max_iterations.
 
@@ -95,7 +108,13 @@ def run(taskq_service, queue_names=None, max_iterations=None):
     :param taskq_service: :class: `taskqueue_stub.TaskQueueServiceStub`
     :param queue_names: :class: `list` of queue name strings.
     :param max_iterations: :class: `int` maximum number of iterations to run.
+    :param non_furious_url_prefixes: :class: `list` of url prefixes that the
+                                 furious task runner will run.
+    :param non_furious_handler: :class: `func` handler for non furious tasks to
+                                run within.
     """
+    if not taskq_service:
+        taskq_service = apiproxy.GetStub('taskqueue')
 
     if not queue_names:
         queue_names = get_push_queue_names(taskq_service)
@@ -107,7 +126,8 @@ def run(taskq_service, queue_names=None, max_iterations=None):
     # Keep processing if we have processed any tasks and are under our limit.
     while processed:
 
-        processed = _run(taskq_service, queue_names)
+        processed = _run(taskq_service, queue_names, non_furious_url_prefixes,
+                         non_furious_handler)
         tasks_processed += processed
         iterations += 1
 
@@ -209,8 +229,7 @@ def add_tasks(taskq_service, task_dict):
 
 
 def purge_tasks(taskq_service, queue_names=None):
-    """
-    Remove all tasks from queues.
+    """Remove all tasks from queues.
 
     :param taskq_service: :class: `taskqueue_stub.TaskQueueServiceStub`
     :param queue_names: :class: `list` of queue name strings.
@@ -236,7 +255,11 @@ def purge_tasks(taskq_service, queue_names=None):
 
 
 def get_queue_names(taskq_service, mode=None):
-    """Returns push queue names from the Task Queue service."""
+    """Returns push queue names from the Task Queue service.
+
+    :param taskq_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param mode: :class: `str` Task queue mode "pull" or "push"
+    """
 
     queue_descriptions = taskq_service.GetQueues()
 
@@ -245,7 +268,11 @@ def get_queue_names(taskq_service, mode=None):
 
 
 def get_pull_queue_names(taskq_service, mode=None):
-    """Returns pull queue names from the Task Queue service."""
+    """Returns pull queue names from the Task Queue service.
+
+    :param taskq_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param mode: :class: `str` Task queue mode "pull" or "push"
+    """
 
     queue_descriptions = taskq_service.GetQueues()
 
@@ -255,7 +282,11 @@ def get_pull_queue_names(taskq_service, mode=None):
 
 
 def get_push_queue_names(taskq_service, mode=None):
-    """Returns push queue names from the Task Queue service."""
+    """Returns push queue names from the Task Queue service.
+
+    :param taskq_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param mode: :class: `str` Task queue mode "pull" or "push"
+    """
 
     queue_descriptions = taskq_service.GetQueues()
 
@@ -293,28 +324,76 @@ class Runner(object):
         return run_queue(self.taskq_service, queue_name)
 
 
-def _execute_task(task):
-    """Extract the body and header from the task and process it."""
+def _execute_task(task, non_furious_url_prefixes=None,
+                  non_furious_handler=None):
+    """Extract the body and header from the task and process it.
+
+    :param task: :class: `taskqueue.Task`
+    :param non_furious_url_prefixes: :class: `list` of url prefixes that the
+                                 furious task runner will run.
+    :param non_furious_handler: :class: `func` handler for non furious tasks to
+                                run within.
+    """
+    if not _is_furious_task(task, non_furious_url_prefixes,
+                            non_furious_handler):
+        return
 
     # Ensure each test looks like it is in a new request.
     os.environ['REQUEST_ID_HASH'] = uuid.uuid4().hex
 
     # Decode the body and process the task.
     body = base64.b64decode(task['body'])
+
     return_code, func_path = process_async_task(dict(task['headers']), body)
 
     # TODO: Possibly do more with return_codes.
 
     # Cleanup context since we will be executing more tasks in this process.
     _clear_context()
+
     del os.environ['REQUEST_ID_HASH']
 
 
-def _run(taskq_service, queue_names):
+def _is_furious_task(task, non_furious_url_prefixes=None,
+                     non_furious_handler=None):
+    """Return flag if task is a Furious task. If no non_furious_url_prefixes is
+    passed in the task will be flagged as Furious. Otherwise it will compare
+    the task url to the furious_url_prefix. If not a Furious task it will try
+    to run it within the non_furious_handler if one is handed in.
+
+    :param task: :class: `taskqueue.Task`
+    :param non_furious_url_prefixes: :class: `list` of url prefixes that the
+                                 furious task runner will run.
+    :param non_furious_handler: :class: `func` handler for non furious tasks to
+                                run within.
+    """
+    if not non_furious_url_prefixes:
+        return True
+
+    task_url = task['url']
+
+    for non_furious_url_prefix in non_furious_url_prefixes:
+        if task_url.startswith(non_furious_url_prefix):
+            if non_furious_handler:
+                logging.info("Passing %s to non Furious handler %s", task,
+                             non_furious_handler)
+                non_furious_handler(task)
+
+            return False
+
+    return True
+
+
+def _run(taskq_service, queue_names, non_furious_url_prefixes=None,
+         non_furious_handler=None):
     """Run individual tasks in push queues.
 
     :param taskq_service: :class: `taskqueue_stub.TaskQueueServiceStub`
     :param queue_names: :class: `list` of queue name strings
+    :param non_furious_url_prefixes: :class: `list` of url prefixes that the
+                                 furious task runner will run.
+    :param non_furious_handler: :class: `func` handler for non furious tasks to
+                                run within.
     """
 
     num_processed = 0
@@ -322,9 +401,113 @@ def _run(taskq_service, queue_names):
     # Process each queue
     # TODO: Round robin instead of one queue at a time.
     for queue_name in queue_names:
-        num_processed += run_queue(taskq_service, queue_name)
+        num_processed += run_queue(taskq_service, queue_name,
+                                   non_furious_url_prefixes, non_furious_handler)
 
     return num_processed
+
+
+def run_random(queue_service, queues, random_seed=123, max_tasks=100):
+    """Run individual tasks in push queues randomly.  This will run by
+    randomly picking a queue and then randomly picking a task from that queue.
+    Once the task is ran we pick a different random queue and random task
+    until we've either exhausted the queues or we have ran the 'max_tasks'.
+
+    This will only run tasks from 'push' queues.
+
+    :param queue_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param queues: :class: `dict` of queue 'descriptions' where each
+        description is a 'dict' with at least 'mode' and 'name'.
+    :param random_seed: :class: 'int' to be used to seed random
+    :param max_tasks: :class: 'int' to indicate the max number of tasks
+        to be ran before we exit.
+    :returns: :class: 'int' with count of tasks ran
+    """
+    if not queues:
+        return 0
+
+    queue_count = len(queues)
+
+    random.seed(random_seed)
+
+    # Run until we hit the task limit
+    num_processed = 0
+    while num_processed < max_tasks:
+
+        # Start by grabbing a random queue to run from
+        queue_index = random.randrange(queue_count)
+
+        # Grab the queue description
+        queue_desc = queues[queue_index]
+        processed_queue_count = 0
+
+        # Keep trying to run a task until we either successfully run or
+        # we have ran through all of the queues.
+        task_ran = False
+        while not task_ran and processed_queue_count < queue_count:
+
+            # Only process from push queues.
+            if queue_desc.get('mode') == 'push':
+                queue_name = queue_desc['name']
+                task_ran = _run_random_task_from_queue(queue_service, queue_name)
+
+            if task_ran:
+                num_processed += 1
+            else:
+                # There isn't a task for the queue so we need to check the next
+                # queue in the list.
+                queue_index += 1
+                queue_desc = queues[queue_index % queue_count]
+                processed_queue_count += 1
+
+        # If we ran through all of the queues without running a task then
+        # we can break out
+        if not task_ran:
+            break
+
+    return num_processed
+
+
+def _run_random_task_from_queue(queue_service, queue_name):
+    """Attempts to run a random task from the queue identified
+    by queue_name.  Returns True if a task was ran otherwise
+    returns False.
+
+    :param queue_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param queue_name: :class: `basestring` with name of queue to run from.
+    :returns: :class: 'bool' true if we ran a task; false otherwise
+    """
+    task = _fetch_random_task_from_queue(queue_service, queue_name)
+
+    if task and task.get('name'):
+        _execute_task(task)
+
+        queue_service.DeleteTask(queue_name, task.get('name'))
+
+        return True
+
+    return False
+
+
+def _fetch_random_task_from_queue(queue_service, queue_name):
+    """Returns a random task description from the queue identified by queue_name
+    if there exists at least one task in the queue.
+
+    :param queue_service: :class: `taskqueue_stub.TaskQueueServiceStub`
+    :param queue_name: :class: `basestring` with name of queue to pull from.
+    :returns: :class: 'dict' containing the task description to run.
+    """
+    tasks = queue_service.GetTasks(queue_name)
+
+    if not tasks:
+        return None
+
+    task = random.choice(tasks)
+
+    if not task:
+        return None
+
+    return task
 
 
 ### Deprecated ###
