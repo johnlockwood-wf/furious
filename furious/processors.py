@@ -21,12 +21,13 @@ import logging
 
 from collections import namedtuple
 
-from .async import Async
-from .context import Context
-from .context import get_current_async
-from .errors import Abort
-from .errors import AbortAndRestart
-from .job_utils import path_to_reference
+from furious.async import Async
+from furious.async import AsyncResult
+from furious.context import Context
+from furious.context import get_current_async
+from furious.errors import Abort
+from furious.errors import AbortAndRestart
+from furious.job_utils import path_to_reference
 
 
 AsyncException = namedtuple('AsyncException', 'error args traceback exception')
@@ -53,24 +54,48 @@ def run_job():
 
     try:
         async.executing = True
-        async.result = function(*args, **kwargs)
+        async.result = AsyncResult(payload=function(*args, **kwargs),
+                                   status=AsyncResult.SUCCESS)
     except Abort as abort:
         logging.info('Async job was aborted: %r', abort)
-        async.result = None
+        async.result = AsyncResult(status=AsyncResult.ABORT)
+
+        # QUESTION: In this eventuality, we should probably tell the context we
+        # are "complete" and let it handle completion checking.
+        _handle_context_completion_check(async)
         return
     except AbortAndRestart as restart:
         logging.info('Async job was aborted and restarted: %r', restart)
         raise
     except Exception as e:
-        async.result = encode_exception(e)
+        async.result = AsyncResult(payload=encode_exception(e),
+                                   status=AsyncResult.ERROR)
 
-    results_processor = async_options.get('_process_results')
+    _handle_results(async_options)
+    _handle_context_completion_check(async)
+
+
+def _handle_results(options):
+    """Process the results of executing the Async's target."""
+    results_processor = options.get('_process_results')
     if not results_processor:
         results_processor = _process_results
 
     processor_result = results_processor()
     if isinstance(processor_result, (Async, Context)):
         processor_result.start()
+
+
+def _handle_context_completion_check(async):
+    """If options specifies a completion check function, execute it."""
+    checker = async.get_options().get('_context_checker')
+
+    if not checker:
+        logging.debug('no checker defined.')
+        return
+
+    # Call the context complete checker with the id of this Async.
+    checker(async)
 
 
 def encode_exception(exception):
@@ -82,7 +107,7 @@ def encode_exception(exception):
     import sys
     return AsyncException(unicode(exception),
                           exception.args,
-                          sys.exc_info()[2],
+                          sys.exc_info(),
                           exception)
 
 
@@ -91,15 +116,16 @@ def _process_results():
     async = get_current_async()
     callbacks = async.get_callbacks()
 
-    if isinstance(async.result, AsyncException):
-        error_callback = callbacks.get('error')
-        if not error_callback:
-            raise async.result.exception, None, async.result.traceback
+    if not isinstance(async.result.payload, AsyncException):
+        callback = callbacks.get('success')
+    else:
+        callback = callbacks.get('error')
 
-        return _execute_callback(async, error_callback)
+        if not callback:
+            raise async.result.payload.exception, None, \
+                async.result.payload.traceback[2]
 
-    success_callback = callbacks.get('success')
-    return _execute_callback(async, success_callback)
+    return _execute_callback(async, callback)
 
 
 def _execute_callback(async, callback):
@@ -109,7 +135,7 @@ def _execute_callback(async, callback):
     from furious.async import Async
 
     if not callback:
-        return async.result
+        return async.result.payload
 
     if isinstance(callback, Async):
         return callback.start()

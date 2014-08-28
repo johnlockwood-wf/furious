@@ -71,14 +71,16 @@ import copy
 from functools import partial
 from functools import wraps
 import json
+import os
+import uuid
 
-from .job_utils import decode_callbacks
-from .job_utils import encode_callbacks
-from .job_utils import get_function_path_and_options
-from .job_utils import path_to_reference
-from .job_utils import reference_to_path
+from furious.job_utils import decode_callbacks
+from furious.job_utils import encode_callbacks
+from furious.job_utils import get_function_path_and_options
+from furious.job_utils import path_to_reference
+from furious.job_utils import reference_to_path
 
-from . import errors
+from furious import errors
 
 
 __all__ = ['ASYNC_DEFAULT_QUEUE', 'ASYNC_ENDPOINT', 'Async', 'defaults']
@@ -107,6 +109,10 @@ class Async(object):
         self.update_options(**options)
 
         self._initialize_recursion_depth()
+
+        self._context_id = self._get_context_id()
+        self._parent_id = self._get_parent_id()
+        self._id = self._get_id()
 
         self._execution_context = None
 
@@ -155,9 +161,24 @@ class Async(object):
         self._executing = False
         self._executed = True
 
+        if self._options.get('persist_result'):
+            self._persist_result()
+
+    def _persist_result(self):
+        """Store this Async's result in persistent storage."""
+        self._prepare_persistence_engine()
+
+        return self._persistence_engine.store_async_result(
+            self.id, self.result)
+
+    @property
+    def function_path(self):
+        return self.job[0]
+
     @property
     def _function_path(self):
-        return self.job[0]
+        # DEPRECATED: Hanging around for backwards compatibility.
+        return self.function_path
 
     @property
     def job(self):
@@ -247,6 +268,9 @@ class Async(object):
             options['persistence_engine'] = reference_to_path(
                 options['persistence_engine'])
 
+        if 'id' in options:
+            self._id = options['id']
+
         self._options.update(options)
 
     def get_callbacks(self):
@@ -274,7 +298,7 @@ class Async(object):
         self._increment_recursion_level()
         self.check_recursion_depth()
 
-        url = "%s/%s" % (ASYNC_ENDPOINT, self._function_path)
+        url = "%s/%s" % (ASYNC_ENDPOINT, self.function_path)
 
         kwargs = {
             'url': url,
@@ -353,22 +377,101 @@ class Async(object):
             self._persistence_engine = path_to_reference(persistence_engine)
             return
 
-        from .config import get_default_persistence_engine
+        from furious.config import get_default_persistence_engine
 
         self._persistence_engine = get_default_persistence_engine()
+
+    def _get_context_id(self):
+        """If this async is in a context set the context id."""
+
+        from furious.context import get_current_context
+
+        context_id = self._options.get('context_id')
+
+        if context_id:
+            return context_id
+
+        try:
+            context = get_current_context()
+        except errors.NotInContextError:
+            context = None
+            self.update_options(context_id=None)
+
+        if context:
+            context_id = context.id
+            self.update_options(context_id=context_id)
+
+        return context_id
+
+    def _get_parent_id(self):
+        """If this async is in within another async set that async id as the
+        parent.
+        """
+        parent_id = self._options.get('parent_id')
+        if parent_id:
+            return parent_id
+
+        from furious.context import get_current_async
+
+        try:
+            async = get_current_async()
+        except errors.NotInContextError:
+            async = None
+
+        if async:
+            parent_id = ":".join([async.parent_id.split(":")[0], async.id])
+        else:
+            parent_id = self.request_id
+
+        self.update_options(parent_id=parent_id)
+
+        return parent_id
+
+    def _get_id(self):
+        """If this async has no id, generate one."""
+        id = self._options.get('id')
+        if id:
+            return id
+
+        id = uuid.uuid4().hex
+        self.update_options(id=id)
+        return id
 
     @property
     def id(self):
         """Return this Async's ID value."""
-        import uuid
-        return uuid.uuid4().hex
+        return self._id
 
-    def persist_result(self):
-        """Store this Async's result in persistent storage."""
-        self._prepare_persistence_engine()
+    @property
+    def context_id(self):
+        """Return this Async's Context Id if it exists."""
+        return self._context_id
 
-        return self._persistence_engine.store_async_result(
-            self.id, self.result)
+    @property
+    def parent_id(self):
+        """Return this Async's Parent Id if it exists."""
+        return self._parent_id
+
+    @property
+    def full_id(self):
+        """Return the full_id for this Async. Consists of the parent id, id and
+        context id.
+        """
+        full_id = ""
+
+        if self.parent_id:
+            full_id = ":".join([self.parent_id, self.id])
+        else:
+            full_id = self.id
+
+        if self.context_id:
+            full_id = "|".join([full_id, self.context_id])
+
+        return full_id
+
+    @property
+    def request_id(self):
+        return os.environ.get('REQUEST_LOG_ID', uuid.uuid4().hex)
 
     def _increment_recursion_level(self):
         """Increment current_depth based on either defaults or the enclosing
@@ -386,6 +489,81 @@ class Async(object):
         # Increment and store
         self.update_options(_recursion={'current': current_depth,
                                         'max': max_depth})
+
+    @property
+    def context_id(self):
+        """Return this Async's Context Id if it exists."""
+        if not self._context_id:
+            self._context_id = self._get_context_id()
+            self.update_options(context_id=self._context_id)
+
+        return self._context_id
+
+    def _get_context_id(self):
+        """If this async is in a context set the context id."""
+
+        from furious.context import get_current_context
+
+        context_id = self._options.get('context_id')
+
+        if context_id:
+            return context_id
+
+        try:
+            context = get_current_context()
+        except errors.NotInContextError:
+            context = None
+            self.update_options(context_id=None)
+
+        if context:
+            context_id = context.id
+            self.update_options(context_id=context_id)
+
+        return context_id
+
+
+class AsyncResult(object):
+
+    SUCCESS = 1
+    ERROR = 2
+    ABORT = 3
+
+    def __init__(self, payload=None, status=None):
+        self.payload = payload
+        self.status = status
+
+    @property
+    def success(self):
+        """Return True if the status is a success. This is true if the status
+        is not an error state. So abort or success. Abort is considered a
+        success as it's something expected by the developer. Errors would
+        generally only happen in tasks if something unexpected occurred.
+        """
+        return self.status != self.ERROR
+
+    def to_dict(self):
+        """Return the AsyncResult converted to a dictionary and also to an
+        serializable format.
+        """
+        return {
+            'status': self.status,
+            'payload': self._payload_to_dict()
+        }
+
+    def _payload_to_dict(self):
+        """When an error status the payload is holding an AsyncException that
+        is converted to a serializable dict.
+        """
+        if self.status != self.ERROR or not self.payload:
+            return self.payload
+
+        import traceback
+
+        return {
+            "error": self.payload.error,
+            "args": self.payload.args,
+            "traceback": traceback.format_exception(*self.payload.traceback)
+        }
 
 
 def async_from_options(options):
@@ -414,6 +592,10 @@ def encode_async_options(async):
     if callbacks:
         options['callbacks'] = encode_callbacks(callbacks)
 
+    if '_context_checker' in options:
+        _checker = options.pop('_context_checker')
+        options['__context_checker'] = reference_to_path(_checker)
+
     return options
 
 
@@ -432,6 +614,10 @@ def decode_async_options(options):
     callbacks = async_options.get('callbacks', {})
     if callbacks:
         async_options['callbacks'] = decode_callbacks(callbacks)
+
+    if '__context_checker' in options:
+        _checker = options['__context_checker']
+        async_options['_context_checker'] = path_to_reference(_checker)
 
     return async_options
 
@@ -461,5 +647,3 @@ def _check_options(options):
         return
 
     assert 'job' not in options
-    #assert 'callbacks' not in options
-

@@ -18,7 +18,7 @@
 Functions to help with encoding and decoding job information.
 """
 
-from . import errors
+from furious import errors
 
 
 def get_function_path_and_options(function):
@@ -125,7 +125,7 @@ def path_to_reference(path):
 
 def encode_callbacks(callbacks):
     """Encode callbacks to as a dict suitable for JSON encoding."""
-    from .async import Async
+    from furious.async import Async
 
     if not callbacks:
         return
@@ -145,12 +145,15 @@ def encode_callbacks(callbacks):
 
 def decode_callbacks(encoded_callbacks):
     """Decode the callbacks to an executable form."""
-    from .async import Async
+    from furious.async import Async
 
     callbacks = {}
     for event, callback in encoded_callbacks.iteritems():
         if isinstance(callback, dict):
-            callback = Async.from_dict(callback)
+            async_type = Async
+            if '_type' in callback:
+                async_type = path_to_reference(callback['_type'])
+            callback = async_type.from_dict(callback)
         else:
             callback = path_to_reference(callback)
 

@@ -18,7 +18,7 @@ import json
 
 import unittest
 
-from mock import patch
+import mock
 
 
 class TestDefaultsDecorator(unittest.TestCase):
@@ -183,12 +183,71 @@ class TestAsync(unittest.TestCase):
 
         self.assertEqual(job, async_job.job)
 
+    @mock.patch('uuid.uuid4', autospec=True)
+    def test_generates_id(self, uuid_patch):
+        """Ensure an id is auto-generated if not specified."""
+        from furious.async import Async
+
+        id = 'random-id'
+        uuid_patch.return_value.hex = id
+
+        job = Async('somehting')
+
+        self.assertEqual(job.id, id)
+        self.assertEqual(job.get_options()['id'], id)
+
+    def test_generates_one_id(self):
+        """Ensure only one random id is auto-generated if not specified."""
+        from furious.async import Async
+
+        job = Async('somehting')
+
+        id1 = job.id
+        id2 = job.id
+        self.assertEqual(id1, id2)
+        self.assertEqual(job.id, id1)
+
+    def test_uses_given_id(self):
+        """Ensure an id passed in is used."""
+        from furious.async import Async
+
+        job = Async('somehting', id='superrandom')
+
+        self.assertEqual(job.id, 'superrandom')
+        self.assertEqual(job.get_options()['id'], 'superrandom')
+
+    def test_update_id(self):
+        """Ensure using update options to update an id works."""
+        from furious.async import Async
+
+        job = Async('somehting')
+        job.update_options(id='newid')
+
+        self.assertEqual(job.id, 'newid')
+        self.assertEqual(job.get_options()['id'], 'newid')
+
+    def test_context_id(self):
+        """Ensure context_id returns the context_id."""
+        from furious.async import Async
+
+        job = Async('somehting')
+        job.update_options(context_id='blarghahahaha')
+        self.assertEqual(job.context_id, 'blarghahahaha')
+
+    def test_no_context_id(self):
+        """Ensure calling context_id when none exists returns None."""
+        from furious.async import Async
+
+        job = Async('somehting')
+        self.assertIsNone(job.context_id)
+
     def test_decorated_options(self):
         """Ensure the defaults decorator sets Async options."""
         from furious.async import Async
         from furious.async import defaults
 
-        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}}
+        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}, 'id': 'thing',
+                   'context_id': None, 'parent_id': 'parentid'}
 
         @defaults(**options.copy())
         def some_function():
@@ -206,16 +265,18 @@ class TestAsync(unittest.TestCase):
         from furious.async import Async
         from furious.async import defaults
 
-        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}}
+        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}, 'id': 'wrong',
+                   'context_id': None, 'parent_id': 'parentid'}
 
         @defaults(**options.copy())
         def some_function():
             pass
 
-        job = Async(some_function, value=17, other='abc')
+        job = Async(some_function, value=17, other='abc', id='correct')
 
         options['value'] = 17
         options['other'] = 'abc'
+        options['id'] = 'correct'
 
         options['job'] = ("furious.tests.test_async.some_function", None, None)
         options['_recursion'] = {'current': 0, 'max': 100}
@@ -249,7 +310,8 @@ class TestAsync(unittest.TestCase):
         """Ensure update_options updates the options."""
         from furious.async import Async
 
-        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}}
+        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}, 'id': 'xx',
+                   'context_id': None, 'parent_id': 'parentid'}
 
         job = Async("nonexistant")
         job.update_options(**options.copy())
@@ -264,14 +326,16 @@ class TestAsync(unittest.TestCase):
         """Ensure update_options supersedes the options set in init."""
         from furious.async import Async
 
-        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}}
+        options = {'value': 1, 'other': 'zzz', 'nested': {1: 1}, 'id': 'wrong',
+                   'context_id': None, 'parent_id': 'parentid'}
 
         job = Async("nonexistant", **options.copy())
 
-        job.update_options(value=23, other='stuff')
+        job.update_options(value=23, other='stuff', id='right')
 
         options['value'] = 23
         options['other'] = 'stuff'
+        options['id'] = 'right'
 
         options['job'] = ("nonexistant", None, None)
 
@@ -361,7 +425,8 @@ class TestAsync(unittest.TestCase):
 
         task_args = {'other': 'zzz', 'nested': 1}
         headers = {'some': 'thing', 'fun': 1}
-        options = {'headers': headers, 'task_args': task_args}
+        options = {'headers': headers, 'task_args': task_args, 'id': 'me',
+                   'context_id': None, 'parent_id': 'parentid'}
 
         job = Async('nonexistant', **options.copy())
 
@@ -375,11 +440,15 @@ class TestAsync(unittest.TestCase):
         """Ensure to_dict correctly encodes callbacks."""
         from furious.async import Async
 
-        options = {'callbacks': {
-            'success': self.__class__.test_to_dict_with_callbacks,
-            'failure': "failure_function",
-            'exec': Async(target=dir)
-        }}
+        options = {'id': 'anident',
+                   'context_id': 'contextid',
+                   'parent_id': 'parentid',
+                   'callbacks': {
+                       'success': self.__class__.test_to_dict_with_callbacks,
+                       'failure': "failure_function",
+                       'exec': Async(target=dir, id='subidnet',
+                                     parent_id='parentid'),
+                   }}
 
         job = Async('nonexistant', **options.copy())
 
@@ -389,6 +458,9 @@ class TestAsync(unittest.TestCase):
                         "TestAsync.test_to_dict_with_callbacks"),
             'failure': "failure_function",
             'exec': {'job': ('dir', None, None),
+                     'id': 'subidnet',
+                     'context_id': None,
+                     'parent_id': 'parentid',
                      '_recursion': {'current': 0, 'max': 100},
                      '_type': 'furious.async.Async'}
         }
@@ -412,6 +484,7 @@ class TestAsync(unittest.TestCase):
         self.assertEqual(headers, async_job.get_headers())
         self.assertEqual(task_args, async_job.get_task_args())
         self.assertEqual(job[0], async_job._function_path)
+        self.assertEqual(job[0], async_job.function_path)
 
     def test_from_dict_with_callbacks(self):
         """Ensure from_dict reconstructs callbacks correctly."""
@@ -422,10 +495,11 @@ class TestAsync(unittest.TestCase):
             'success': ("furious.tests.test_async."
                         "TestAsync.test_to_dict_with_callbacks"),
             'failure': "dir",
-            'exec': {'job': ('dir', None, None)}
+            'exec': {'job': ('dir', None, None), 'id': 'petey',
+                     'parent_id': 'parentid'}
         }
 
-        options = {'job': job, 'callbacks': callbacks}
+        options = {'job': job, 'callbacks': callbacks, 'parent_id': 'parentid'}
 
         async_job = Async.from_dict(options)
 
@@ -438,6 +512,9 @@ class TestAsync(unittest.TestCase):
         exec_callback = callbacks.pop('exec')
 
         correct_options = {'job': ('dir', None, None),
+                           'id': 'petey',
+                           'parent_id': 'parentid',
+                           'context_id': None,
                            '_recursion': {'current': 0, 'max': 100},
                            '_type': 'furious.async.Async'}
 
@@ -453,11 +530,14 @@ class TestAsync(unittest.TestCase):
         task_args = {'other': 'zzz', 'nested': 1}
         options = {
             'job': job,
+            'id': 'someid',
             'headers': headers,
             'task_args': task_args,
             'persistence_engine': 'furious.extras.appengine.ndb_persistence',
             '_recursion': {'current': 1, 'max': 100},
             '_type': 'furious.async.Async',
+            'context_id': None,
+            'parent_id': 'parentid'
         }
 
         async_job = Async.from_dict(options)
@@ -489,7 +569,9 @@ class TestAsync(unittest.TestCase):
         expected_url = "%s/%s" % (ASYNC_ENDPOINT, 'test')
 
         task_args = {'eta': eta_posix}
-        options = {'job': job, 'headers': headers, 'task_args': task_args}
+        options = {'job': job, 'headers': headers, 'task_args': task_args,
+                   'id': 'ident', 'context_id': 'contextid',
+                   'parent_id': 'parentid'}
 
         task = Async.from_dict(options).to_task()
 
@@ -560,7 +642,48 @@ class TestAsync(unittest.TestCase):
         self.assertEqual(123, job.result)
         self.assertTrue(job.executed)
 
-    @patch('google.appengine.api.taskqueue.Queue', autospec=True)
+    def test_setting_result_does_not_call_persist(self):
+        """Ensure setting the result doesn't call persist result if not in
+        persist mode.
+        """
+        from furious.async import Async
+
+        result = "here be the results."
+
+        persistence_engine = mock.Mock()
+
+        job = Async(target=dir)
+
+        # Manually set the persistence_engine so that the Async doesn't try to
+        # reload the mock persistence_engine.
+        job._persistence_engine = persistence_engine
+
+        job.executing = True
+        job.result = result
+
+        self.assertEqual(persistence_engine.store_async_result.call_count, 0)
+
+    def test_setting_result_calls_persist(self):
+        """Ensure setting the result calls the persist_result method."""
+        from furious.async import Async
+
+        result = "here be the results."
+
+        persistence_engine = mock.Mock()
+
+        job = Async(target=dir, persist_result=True)
+
+        # Manually set the persistence_engine so that the Async doesn't try to
+        # reload the mock persistence_engine.
+        job._persistence_engine = persistence_engine
+
+        job.executing = True
+        job.result = result
+
+        persistence_engine.store_async_result.assert_called_once_with(job.id,
+                                                                      result)
+
+    @mock.patch('google.appengine.api.taskqueue.Queue', autospec=True)
     def test_start_hits_transient_error(self, queue_mock):
         """Ensure the task retries if a transient error is hit."""
         from google.appengine.api.taskqueue import TransientError
@@ -581,7 +704,7 @@ class TestAsync(unittest.TestCase):
         queue_mock.assert_called_with(name='my_queue')
         self.assertEqual(2, queue_mock.return_value.add.call_count)
 
-    @patch('google.appengine.api.taskqueue.Queue', autospec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue', autospec=True)
     def test_start_hits_task_already_exists_error_error(self, queue_mock):
         """Ensure the task returns if a task already exists error is hit."""
         from google.appengine.api.taskqueue import TaskAlreadyExistsError
@@ -595,7 +718,7 @@ class TestAsync(unittest.TestCase):
         queue_mock.assert_called_with(name='my_queue')
         self.assertEqual(1, queue_mock.return_value.add.call_count)
 
-    @patch('google.appengine.api.taskqueue.Queue', autospec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue', autospec=True)
     def test_start_hits_tombstoned_task_error_error(self, queue_mock):
         """Ensure the task returns if a tombstoned task error is hit."""
         from google.appengine.api.taskqueue import TombstonedTaskError
@@ -609,7 +732,7 @@ class TestAsync(unittest.TestCase):
         queue_mock.assert_called_with(name='my_queue')
         self.assertEqual(1, queue_mock.return_value.add.call_count)
 
-    @patch('google.appengine.api.taskqueue.Queue', autospec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue', autospec=True)
     def test_start_runs_successfully(self, queue_mock):
         """Ensure the Task is inserted into the specified queue."""
         from furious.async import Async
@@ -623,7 +746,7 @@ class TestAsync(unittest.TestCase):
         # TODO: Check that the task is the same.
         # self.assertEqual(task, queue_mock.add.call_args)
 
-    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
     def test_task_transactional(self, queue_add_mock):
         """Ensure the task is added transactional when start is
         called with transactional."""
@@ -637,7 +760,7 @@ class TestAsync(unittest.TestCase):
         self.assertIn('transactional', call_kwargs)
         self.assertTrue(call_kwargs['transactional'])
 
-    @patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue.add', auto_spec=True)
     def test_task_non_transactional(self, queue_add_mock):
         """Ensure the task is added transactional when start is
         called with transactional."""
@@ -651,7 +774,8 @@ class TestAsync(unittest.TestCase):
         self.assertIn('transactional', call_kwargs)
         self.assertFalse(call_kwargs['transactional'])
 
-    @patch('google.appengine.api.taskqueue.Queue.add_async', auto_spec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue.add_async',
+                auto_spec=True)
     def test_start_async_no_rpc(self, queue_add_async_mock):
         """Ensure that when the task is called with async=True, that the
         add_async method is called with the default rpc=None.
@@ -664,7 +788,8 @@ class TestAsync(unittest.TestCase):
         self.assertTrue(queue_add_async_mock.called)
         self.assertEqual(None, queue_add_async_mock.call_args[1]['rpc'])
 
-    @patch('google.appengine.api.taskqueue.Queue.add_async', auto_spec=True)
+    @mock.patch('google.appengine.api.taskqueue.Queue.add_async',
+                auto_spec=True)
     def test_start_async_with_rpc(self, queue_add_async_mock):
         """Ensure that when the task is called with async=True and an rpc is
         provided, that the add_async method is called with the correct rpc.
@@ -809,6 +934,32 @@ class TestAsync(unittest.TestCase):
 
         self.assertEqual(
             5, options['task_args']['retry_options']['task_retry_limit'])
+
+    def test_context_checker_encoded(self):
+        """Ensure the _context_checker is correctly encoded in options dict."""
+        from furious.async import Async
+        from furious.async import encode_async_options
+
+        async_job = Async("something", _context_checker=dir)
+        options = encode_async_options(async_job)
+
+        self.assertEqual('dir', options['__context_checker'])
+
+    def test_context_checker_encoded_and_decoded(self):
+        """Ensure the _context_checker is correctly encoded to and decoded from
+        an Async options dict.
+        """
+        from furious.async import Async
+
+        async_job = Async("something", _context_checker=dir)
+
+        encoded_async = async_job.to_dict()
+        self.assertEqual(encoded_async['__context_checker'], 'dir')
+
+        new_async_job = Async.from_dict(encoded_async)
+        self.assertEqual(new_async_job.get_options()['_context_checker'], dir)
+
+        self.assertEqual(async_job.to_dict(), new_async_job.to_dict())
 
     def test_retry_value_is_decodable(self):
         """Ensure that from_dict is the inverse of to_dict when retry options

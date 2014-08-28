@@ -32,12 +32,12 @@ from .callback import AsyncCallbackHandler
 from .callback import AsyncErrorCallbackHandler
 from .callback import AsyncAsyncCallbackHandler
 from .complex_workflow import ComplexWorkflowHandler
-from .context_complex import ContextComplexHandler
-from .context_grep import ContextGrepHandler
-from .context_grep import GrepViewHandler
 from .context_intro import ContextIntroHandler
+from .context_events import ContextEventsHandler
+from .context_completion_with_results import ContextCompletionHandler
 from .grep import GrepHandler
 from .simple_workflow import SimpleWorkflowHandler
+from .limits import LimitHandler
 
 config = {
     'webapp2_extras.jinja2': {
@@ -49,12 +49,8 @@ app = webapp2.WSGIApplication([
     ('/', AsyncIntroHandler),
     ('/abort_and_restart', AbortAndRestartHandler),
     ('/context', ContextIntroHandler),
-    ('/context/complex', ContextComplexHandler),
-    ('/context/grep/', GrepViewHandler),
-    ('/context/grep/run', ContextGrepHandler),
-    ('/context/grep/grouper/', GrepViewHandler),
-    webapp2.Route('/context/grep/grouper/run', ContextGrepHandler,
-                  defaults={'grouper':True}),
+    ('/context/event', ContextEventsHandler),
+    ('/context/completion', ContextCompletionHandler),
     ('/callback', AsyncCallbackHandler),
     ('/callback/error', AsyncErrorCallbackHandler),
     ('/callback/async', AsyncAsyncCallbackHandler),
@@ -64,5 +60,6 @@ app = webapp2.WSGIApplication([
     ('/batcher/run', BatcherHandler),
     ('/batcher/stats', BatcherStatsHandler),
     ('/grep', GrepHandler),
+    ('/limits', LimitHandler),
 ], config=config)
 
